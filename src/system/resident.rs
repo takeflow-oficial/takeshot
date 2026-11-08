@@ -22,16 +22,6 @@ pub enum XAction {
     Quit,
 }
 
-/// How the main window leaves the screen for the tray: hidden, or minimized on Wayland, where a
-/// window can neither hide itself (winit ignores Visible(false) there) nor come back by itself.
-pub fn hide_command(wayland: bool) -> egui::ViewportCommand {
-    if wayland {
-        egui::ViewportCommand::Minimized(true)
-    } else {
-        egui::ViewportCommand::Visible(false)
-    }
-}
-
 /// winit uses Wayland when the session has one.
 pub fn on_wayland() -> bool {
     cfg!(target_os = "linux") && std::env::var_os("WAYLAND_DISPLAY").is_some()
@@ -68,11 +58,13 @@ pub struct Queue {
     rx: mpsc::Receiver<ResidentEvent>,
 }
 
-/// The end the hotkey, hook, tray and instance threads hold: sending also wakes the app.
+/// The end the hotkey, hook, tray and instance threads hold: sending also wakes the app. It wakes
+/// the context it points at, which `retarget` moves when the window changes (Linux destroys the
+/// main window to hide it and makes another to show it).
 #[derive(Clone)]
 pub struct Sender {
     tx: mpsc::Sender<ResidentEvent>,
-    ctx: egui::Context,
+    ctx: std::sync::Arc<std::sync::Mutex<egui::Context>>,
 }
 
 impl Queue {
@@ -82,7 +74,7 @@ impl Queue {
             Self { rx },
             Sender {
                 tx,
-                ctx: ctx.clone(),
+                ctx: std::sync::Arc::new(std::sync::Mutex::new(ctx.clone())),
             },
         )
     }
@@ -96,7 +88,22 @@ impl Sender {
     /// Queues the event and asks egui for a frame; cheap enough for a keyboard hook callback.
     pub fn send(&self, e: ResidentEvent) {
         let _ = self.tx.send(e);
-        self.ctx.request_repaint();
+        self.wake();
+    }
+
+    /// Asks for a frame (or, with no window, a pass of the resident's loop) without an event.
+    pub fn wake(&self) {
+        let ctx = self.ctx.lock().ok().map(|c| c.clone());
+        if let Some(ctx) = ctx {
+            ctx.request_repaint();
+        }
+    }
+
+    /// From now on wakes `ctx`, for every clone of this sender.
+    pub fn retarget(&self, ctx: &egui::Context) {
+        if let Ok(mut c) = self.ctx.lock() {
+            *c = ctx.clone();
+        }
     }
 }
 
@@ -161,6 +168,16 @@ impl Resident {
 
     pub fn poll(&self) -> Vec<ResidentEvent> {
         self.queue.drain()
+    }
+
+    /// The end that wakes whichever context the resident draws on now.
+    pub fn sender(&self) -> Sender {
+        self.sender.clone()
+    }
+
+    /// Wake the context of the window that exists now (or of the resident's loop with none).
+    pub fn retarget(&self, ctx: &egui::Context) {
+        self.sender.retarget(ctx);
     }
 
     /// Turns the PrtSc priority hook on or off (Windows; elsewhere there is none).
@@ -267,10 +284,37 @@ mod tests {
     }
 
     #[test]
-    fn the_window_minimizes_where_it_cannot_hide() {
-        // Wayland ignores Visible(false): the tray hides the window by minimizing it there.
-        assert_eq!(hide_command(false), egui::ViewportCommand::Visible(false));
-        assert_eq!(hide_command(true), egui::ViewportCommand::Minimized(true));
+    fn events_wake_the_context_the_resident_points_at() {
+        // On Linux the window is destroyed and made again: the threads that hold a sender must
+        // wake the context that exists now, not the one of the window that closed.
+        fn counted(ctx: &egui::Context) -> std::sync::Arc<std::sync::atomic::AtomicUsize> {
+            let n = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let n2 = n.clone();
+            ctx.set_request_repaint_callback(move |_| {
+                n2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            });
+            n
+        }
+        let woken =
+            |n: &std::sync::atomic::AtomicUsize| n.load(std::sync::atomic::Ordering::SeqCst);
+        let (first, second) = (egui::Context::default(), egui::Context::default());
+        let (a, b) = (counted(&first), counted(&second));
+        let (_queue, sender) = Queue::new(&first);
+        let elsewhere = sender.clone();
+        sender.send(ResidentEvent::Show(Page::Start));
+        assert_eq!((woken(&a), woken(&b)), (1, 0));
+        sender.retarget(&second);
+        elsewhere.send(ResidentEvent::Show(Page::Start));
+        assert_eq!(
+            (woken(&a), woken(&b)),
+            (1, 1),
+            "a clone follows the retarget"
+        );
+        let third = egui::Context::default();
+        let c = counted(&third);
+        elsewhere.retarget(&third);
+        sender.wake();
+        assert_eq!(woken(&c), 1, "wake() asks for a frame without an event");
     }
 
     #[test]

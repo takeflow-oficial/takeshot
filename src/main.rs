@@ -25,7 +25,9 @@ use engine::{model, render};
 use screens::{editor, home, notice, overlay, pin, widgets};
 use system::{actions, capture, fonts, settings};
 
+use std::cell::RefCell;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -50,6 +52,17 @@ pub struct RunOverrides {
 }
 
 impl Shared {
+    pub fn new(settings: settings::Settings, overrides: RunOverrides) -> Self {
+        Self {
+            settings,
+            settings_dirty: false,
+            fonts: Arc::new(fonts::FontLib::load()),
+            logo: widgets::LogoCache::new(),
+            toast: None,
+            overrides,
+        }
+    }
+
     /// A `Shared` for tests: default settings with a captures folder that does not exist.
     #[cfg(test)]
     pub fn for_tests() -> Self {
@@ -98,9 +111,10 @@ pub enum Switch {
 
 enum Mode {
     Home(Box<home::Home>),
-    /// The resident: main window, tray, hotkeys and the PrtSc hook.
+    /// The resident: main window, tray, hotkeys and the PrtSc hook. On Linux the main window
+    /// comes and goes (`home` is its state, none while there is no window).
     Resident {
-        home: Box<home::Home>,
+        home: Option<Box<home::Home>>,
         shell: Box<screens::shell::Shell>,
         resident: Box<system::resident::Resident>,
     },
@@ -376,8 +390,10 @@ impl App {
     }
 }
 
-impl eframe::App for App {
-    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+impl App {
+    /// What happens on every wake-up, whether a window is shown or not: the answer to the
+    /// resident's Quit, and (for the resident) its events, its tray and its settings.
+    fn pump(&mut self, ctx: &egui::Context) {
         self.answer_quit(ctx);
         if let Mode::Resident {
             home,
@@ -386,7 +402,7 @@ impl eframe::App for App {
         } = &mut self.mode
         {
             for ev in resident.poll() {
-                shell.handle(ctx, ev, home, &mut self.shared);
+                shell.handle(ctx, ev, home.as_deref_mut(), &mut self.shared);
             }
             shell.tick(ctx, resident, &self.shared);
             if self.shared.settings_dirty {
@@ -394,6 +410,57 @@ impl eframe::App for App {
                 self.shared.settings.save();
             }
         }
+    }
+
+    /// The resident's main window opens (Linux): its context gets the fonts, the look and a
+    /// fresh Início, and the events wake it.
+    fn attach(&mut self, ctx: &egui::Context) {
+        self.shared.fonts.install(ctx);
+        // Ctrl+0, Ctrl+1 and Ctrl+plus or minus belong to the editor's zoom, not egui's UI zoom.
+        ctx.options_mut(|o| o.zoom_with_keyboard = false);
+        self.shared.logo = widgets::LogoCache::new();
+        self.shared.logo.sync(ctx, &self.shared.settings.watermark);
+        views::begin_frame(ctx, &self.shared.tokens(ctx.system_theme()));
+        if let Mode::Resident {
+            home,
+            shell,
+            resident,
+        } = &mut self.mode
+        {
+            resident.retarget(ctx);
+            *home = Some(Box::new(main_home(ctx, &self.shared, shell.take_page())));
+        }
+    }
+
+    /// The resident's main window closed (Linux): what belonged to its context goes, and the
+    /// events wake the resident's loop again.
+    fn detach(&mut self, headless: &egui::Context) {
+        if let Mode::Resident {
+            home,
+            shell,
+            resident,
+        } = &mut self.mode
+        {
+            resident.retarget(headless);
+            *home = None;
+            shell.window_closed();
+        }
+    }
+
+    /// The resident wants a main window on screen.
+    fn wants_window(&self) -> bool {
+        matches!(&self.mode, Mode::Resident { shell, .. } if shell.wants_window())
+    }
+
+    /// The resident's Quit was confirmed.
+    fn is_quitting(&self) -> bool {
+        matches!(&self.mode, Mode::Resident { shell, .. } if shell.is_quitting())
+    }
+}
+
+impl eframe::App for App {
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.pump(ctx);
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
@@ -422,7 +489,9 @@ impl eframe::App for App {
                 shell,
                 resident,
             } => {
-                shell.ui(ui, frame, resident, home, &mut self.shared);
+                if let Some(home) = home {
+                    shell.ui(ui, frame, resident, home, &mut self.shared);
+                }
                 Switch::None
             }
             Mode::Overlay(o) => {
@@ -555,6 +624,13 @@ fn main() -> eframe::Result {
         }
     }
 
+    // Linux: the main window comes and goes, so the resident runs its windows one at a time.
+    if resident_mode && !screens::shell::HOSTED {
+        let res = run_resident_windows(&args, settings, listener);
+        actions::wait_clipboard_keepers();
+        return res;
+    }
+
     // One capture at a time: while a selection is on screen, another PrtSc is ignored.
     let mut capture_slot = None;
     if matches!(args.launch, Launch::Capture { .. }) && args.screenshot.is_none() && !args.sample {
@@ -581,11 +657,7 @@ fn main() -> eframe::Result {
         }
     }
 
-    let mut vp = egui::ViewportBuilder::default()
-        .with_icon(Arc::new(ui::brand::window_icon(
-            args.theme.unwrap_or(settings.ui_theme),
-        )))
-        .with_app_id("takeshot");
+    let mut vp = base_viewport(args.theme.unwrap_or(settings.ui_theme));
     let mut editor_window = (egui::pos2(80.0, 60.0), egui::vec2(1280.0, 820.0));
     let mut notice_area = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 900.0));
     let mut instant_notice = None;
@@ -703,7 +775,7 @@ fn main() -> eframe::Result {
                 .with_resizable(false)
                 .with_inner_size(notice::NOTICE_SIZE);
         }
-        _ if resident_mode && screens::shell::HOSTED => {
+        _ if resident_mode => {
             // An invisible host: tiny, transparent, click-through, off screen and off the taskbar.
             // Its own title, so the window lookups by "Takeshot" find only the main window.
             vp = vp
@@ -715,14 +787,7 @@ fn main() -> eframe::Result {
                 .with_mouse_passthrough(true)
                 .with_taskbar(false);
         }
-        _ => {
-            vp = ui::chrome::frameless(vp)
-                .with_title("Takeshot")
-                .with_inner_size([1160.0, 740.0])
-                .with_min_inner_size([900.0, 600.0])
-                .with_drag_and_drop(true)
-                .with_visible(!(resident_mode && args.minimized));
-        }
+        _ => vp = main_window_viewport(vp),
     }
 
     let options = eframe::NativeOptions {
@@ -736,8 +801,6 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             let ctx = &cc.egui_ctx;
-            let fonts = Arc::new(fonts::FontLib::load());
-            fonts.install(ctx);
             // Ctrl+0, Ctrl+1 and Ctrl+plus or minus belong to the editor's zoom, not egui's UI zoom.
             ctx.options_mut(|o| o.zoom_with_keyboard = false);
             // Theme, mode and language: command-line overrides win for this run only.
@@ -748,19 +811,8 @@ fn main() -> eframe::Result {
                 lang_pref,
                 ui::i18n::system_locale().as_deref(),
             ));
-            let mut shared = Shared {
-                settings,
-                settings_dirty: false,
-                fonts,
-                logo: widgets::LogoCache::new(),
-                toast: None,
-                overrides: RunOverrides {
-                    theme: args.theme,
-                    mode: args.mode,
-                    captures_dir: args.captures_dir.clone(),
-                    select: args.select.clone(),
-                },
-            };
+            let mut shared = Shared::new(settings, run_overrides(&args));
+            shared.fonts.install(ctx);
             shared.logo.sync(ctx, &shared.settings.watermark);
             views::begin_frame(ctx, &shared.tokens(ctx.system_theme()));
             let mode = match args.launch {
@@ -827,9 +879,10 @@ fn main() -> eframe::Result {
                 Launch::Home if resident_mode => {
                     let resident =
                         system::resident::Resident::start(ctx, &shared.settings, listener.take());
-                    let shell = screens::shell::Shell::new(screens::shell::HOSTED, !args.minimized);
+                    // Only Windows and macOS get here: the root is an invisible host.
+                    let shell = screens::shell::Shell::new(true, !args.minimized);
                     Mode::Resident {
-                        home: Box::new(main_home(ctx, &shared, args.page)),
+                        home: Some(Box::new(main_home(ctx, &shared, args.page))),
                         shell: Box::new(shell),
                         resident: Box::new(resident),
                     }
@@ -880,6 +933,125 @@ fn main() -> eframe::Result {
     actions::wait_clipboard_keepers();
     system::notify::wait_pending();
     res
+}
+
+/// The window every Takeshot window starts from: its icon (in the theme's look) and its app id.
+fn base_viewport(theme: ui::tokens::ThemeId) -> egui::ViewportBuilder {
+    egui::ViewportBuilder::default()
+        .with_icon(Arc::new(ui::brand::window_icon(theme)))
+        .with_app_id("takeshot")
+}
+
+/// The main window: the theme's own bar, 1160 by 740.
+fn main_window_viewport(vp: egui::ViewportBuilder) -> egui::ViewportBuilder {
+    ui::chrome::frameless(vp)
+        .with_title("Takeshot")
+        .with_inner_size([1160.0, 740.0])
+        .with_min_inner_size([900.0, 600.0])
+        .with_drag_and_drop(true)
+}
+
+/// `--theme`, `--mode`, `--captures-dir` and `--select`: for this run only.
+fn run_overrides(args: &Args) -> RunOverrides {
+    RunOverrides {
+        theme: args.theme,
+        mode: args.mode,
+        captures_dir: args.captures_dir.clone(),
+        select: args.select.clone(),
+    }
+}
+
+/// How long the resident sleeps with no window when nothing wakes it: it also refreshes the
+/// recent captures in the tray menu (every 30 s).
+const HEARTBEAT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// The resident of Linux. A window cannot hide on Wayland, so the main window is made when it is
+/// wanted and destroyed to hide it; between windows the tray, the hotkeys and the second launches
+/// are served here, one egui pass per wake-up (`system::headless`). Returns when Quit is
+/// confirmed, or when a window cannot be made.
+fn run_resident_windows(
+    args: &Args,
+    settings: settings::Settings,
+    listener: Option<system::instance::Listener>,
+) -> eframe::Result {
+    use system::headless::{self, Next};
+    let idle = headless::Idle::default();
+    let headless_ctx = headless::context(&idle);
+    let shared = Shared::new(settings, run_overrides(args));
+    let resident = system::resident::Resident::start(&headless_ctx, &shared.settings, listener);
+    let shell = screens::shell::Shell::new(false, !args.minimized).with_page(args.page);
+    let app = Rc::new(RefCell::new(App {
+        mode: Mode::Resident {
+            home: None,
+            shell: Box::new(shell),
+            resident: Box::new(resident),
+        },
+        shared,
+        screenshot: None,
+        frames: 0,
+        shot_saved: Arc::new(AtomicBool::new(false)),
+        shot_requested: false,
+        editor_window: (egui::pos2(80.0, 60.0), egui::vec2(1280.0, 820.0)),
+        notice_area: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 900.0)),
+        quit_request: Arc::new(std::sync::Mutex::new(None)),
+        quit_close: Arc::new(AtomicBool::new(false)),
+    }));
+    let since = std::time::Instant::now();
+    loop {
+        let step = {
+            let a = app.borrow();
+            headless::next(a.wants_window(), a.is_quitting())
+        };
+        match step {
+            Next::Quit => return Ok(()),
+            Next::Window => {
+                let theme = {
+                    let a = app.borrow();
+                    args.theme.unwrap_or(a.shared.settings.ui_theme)
+                };
+                let options = eframe::NativeOptions {
+                    viewport: main_window_viewport(base_viewport(theme)),
+                    ..Default::default()
+                };
+                let window = app.clone();
+                eframe::run_native(
+                    "Takeshot",
+                    options,
+                    Box::new(move |cc| {
+                        window.borrow_mut().attach(&cc.egui_ctx);
+                        Ok(Box::new(Window(window)))
+                    }),
+                )?;
+                app.borrow_mut().detach(&headless_ctx);
+            }
+            Next::Wait => {
+                headless::pass(&headless_ctx, since.elapsed().as_secs_f64(), |ctx| {
+                    app.borrow_mut().pump(ctx)
+                });
+                let a = app.borrow();
+                if headless::next(a.wants_window(), a.is_quitting()) == Next::Wait {
+                    idle.sleep(HEARTBEAT);
+                }
+            }
+        }
+    }
+}
+
+/// One of the resident's windows over the app that outlives it (Linux).
+struct Window(Rc<RefCell<App>>);
+
+impl eframe::App for Window {
+    fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.0.borrow_mut().logic(ctx, frame);
+    }
+
+    fn clear_color(&self, visuals: &egui::Visuals) -> [f32; 4] {
+        self.0.borrow().clear_color(visuals)
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, frame: &mut eframe::Frame) {
+        self.0.borrow_mut().ui(ui, frame);
+    }
 }
 
 /// A few marks on the sample picture so the demo editor shows the tools.

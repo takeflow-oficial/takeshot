@@ -5,13 +5,20 @@
 #     with no screen);
 #   - the AppImage on X11, in a container with no GTK installed (it must carry its own libraries).
 # Each run is `takeshot --screenshot`: the window draws ~120 frames and saves its picture.
+# Then the resident's window is checked (scripts/container/resident-check.sh): it is made when
+# wanted, destroyed to hide it to the tray, and made again, on X11 and on Wayland.
+#
+#   scripts/linux-smoke.sh [screens|resident]   (default: both)
 set -eu
+only=${1:-all}
+want() { [ "$only" = all ] || [ "$only" = "$1" ]; }
 cd "$(git rev-parse --show-toplevel)"
 dir=target/packages-linux
 deb=$(cd "$dir" && ls takeshot-*-linux-x86_64.deb)
 appimage=$(cd "$dir" && ls takeshot-*-linux-x86_64.AppImage)
 mkdir -p "$dir/smoke"
 mount="$(pwd -W 2> /dev/null || pwd)/$dir:/pk"
+checks="$(pwd -W 2> /dev/null || pwd)/scripts/container:/t:ro"
 # apt in a container now and then fails on the network: once more, then its log.
 prelude='
   set -e
@@ -24,8 +31,9 @@ prelude='
   }
 '
 # --init: as PID 1, xvfb-run never hears that Xvfb is ready.
-run() { MSYS_NO_PATHCONV=1 docker run --rm --init -v "$mount" ubuntu:24.04 bash -c "$prelude $1"; }
+run() { MSYS_NO_PATHCONV=1 docker run --rm --init -v "$mount" -v "$checks" ubuntu:24.04 bash -c "$prelude $1"; }
 
+if want screens; then
 echo "== deb on X11"
 run "
   get /pk/$deb xvfb xauth libgl1-mesa-dri
@@ -59,3 +67,18 @@ run "
   xvfb-run -a -s '-screen 0 1280x800x24' /tmp/takeshot.AppImage --appimage-extract-and-run --page estilo --lang en --screenshot /pk/smoke/appimage-x11-style.png
 "
 ls -la "$dir/smoke"
+fi
+
+if want resident; then
+  echo "== deb on X11: the resident's window comes and goes"
+  run "
+    get /pk/$deb xvfb xauth libgl1-mesa-dri openbox wmctrl procps dbus dbus-bin
+    dbus-run-session -- bash /t/resident-check.sh x11
+  "
+
+  echo "== deb on Wayland (sway): the window comes and goes, the notice is a notification (mako)"
+  run "
+    get /pk/$deb sway libgl1-mesa-dri libegl1 jq procps mako-notifier dbus dbus-bin
+    dbus-run-session -- bash /t/resident-check.sh wayland
+  "
+fi

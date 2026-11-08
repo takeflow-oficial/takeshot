@@ -10,7 +10,8 @@ scripts/linux-smoke.sh      # opens them in clean Ubuntu 24.04 containers and sa
 `linux-packages.sh` puts the packages in `target/packages-linux` and prints the shared libraries the binary needs (`dpkg-shlibdeps`), which is where the `.deb`'s `depends` in `Cargo.toml` comes from. `linux-smoke.sh` then:
 
 - installs the `.deb` with `apt` (which pulls its dependencies) and runs `takeshot --screenshot` on **X11** (Xvfb) and on **Wayland** (sway with no screen, `WLR_BACKENDS=headless`);
-- runs the AppImage on X11 in a container with no GTK installed, so it must carry its own libraries.
+- runs the AppImage on X11 in a container with no GTK installed, so it must carry its own libraries;
+- checks the resident's window (`scripts/container/resident-check.sh`, `scripts/linux-smoke.sh resident` for just this part): started in the tray with no window, then three times a second launch shows the window and the X (with "Minimize to tray" chosen) closes it, the resident outliving each one. It runs on X11 (Xvfb with openbox, `wmctrl` closing the window) and on Wayland (sway, closing it with `swaymsg kill`), and on Wayland it also takes a capture on the sample screen and checks that the "Capture saved" notice reaches mako, the notification daemon, and opens no window.
 
 The pictures land in `target/packages-linux/smoke`. Look at each one: the window drawn whole, in the theme asked for.
 
@@ -22,6 +23,7 @@ These need a desktop session and go through by hand before a release (a VM or a 
 2. `PrtSc` and `Shift+PrtSc` on X11; on Wayland, a desktop shortcut running `takeshot --capture`, and the capture through the desktop portal.
 3. Settings > General > "Start with the system": log out and in; the entry is `~/.config/autostart/Takeshot.desktop`.
 4. Quit from the tray (or Settings > General when there is no tray) closes the editors and pinned pictures too.
+5. On Wayland (KDE, GNOME): "Minimize to tray" leaves no entry in the taskbar, the tray's "Open" (and a second launch) brings the window back to the workspace you are on, and Copy or Save in a capture shows a notification in the desktop's corner while the screen goes back to normal at once.
 
 ## Last run
 

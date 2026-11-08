@@ -113,7 +113,7 @@ Get the latest version from [Releases](https://github.com/takeflow-oficial/takes
 The builds are not code-signed yet:
 - **Windows**: SmartScreen may say it protected your PC. Click "More info" > "Run anyway". On Windows 10 the new tray icon starts hidden under the `^` arrow: drag it to the taskbar.
 - **macOS**: the first time macOS blocks it. Open System Settings > Privacy & Security, click "Open Anyway" next to Takeshot and confirm (or run `xattr -cr /Applications/Takeshot.app`). Then allow it in Privacy & Security > Screen & System Audio Recording.
-- **Linux**: the tray icon needs an AppIndicator panel (`libayatana-appindicator3-1`); without it, Quit is in Settings > General. On Wayland "Minimize to tray" minimizes to the taskbar instead.
+- **Linux**: the tray icon needs an AppIndicator panel (`libayatana-appindicator3-1`); without it, Quit is in Settings > General. On Wayland the notice after copying or saving is a desktop notification.
 
 On Windows, the setup.exe's uninstaller stops Takeshot, removes its start-with-the-system entry (an update keeps it) and can delete its settings. The MSI installs for every user, asks for an administrator, and leaves the login entry behind.
 
@@ -156,7 +156,7 @@ One resident process per user owns the tray, the shortcuts and the main window. 
 | UI | egui and eframe 0.37 (glow), Roboto and Lucide icons embedded |
 | Rendering | tiny-skia, ab_glyph, image |
 | Screen capture | xcap (Windows, macOS, X11) and the desktop portal (Wayland) |
-| System | tray-icon, global-hotkey, arboard, interprocess, auto-launch, rfd, trash |
+| System | tray-icon, global-hotkey, arboard, interprocess, auto-launch, rfd, trash, notify-rust (Linux) |
 | Packaging | cargo-packager (NSIS, WiX, app, deb, AppImage) and create-dmg (dmg) |
 | CI | GitHub Actions: fmt, clippy and tests on Windows, macOS and Linux for every pull request; a one-button release builds the installers and publishes them |
 
@@ -300,7 +300,7 @@ Baixe a versão mais recente em [Releases](https://github.com/takeflow-oficial/t
 As versões ainda não são assinadas:
 - **Windows**: o SmartScreen pode dizer que protegeu o computador. Clique em "Mais informações" > "Executar assim mesmo". No Windows 10 o ícone novo começa escondido na seta `^` da bandeja: arraste-o para a barra.
 - **macOS**: na primeira vez o macOS bloqueia. Abra Ajustes do Sistema > Privacidade e Segurança, clique em "Abrir Mesmo Assim" ao lado do Takeshot e confirme (ou rode `xattr -cr /Applications/Takeshot.app`). Depois libere em Privacidade e Segurança > Gravação de Tela e Áudio do Sistema.
-- **Linux**: o ícone da bandeja precisa de um painel com AppIndicator (`libayatana-appindicator3-1`); sem ele, Sair fica em Ajustes > Geral. No Wayland, "Minimizar para a bandeja" minimiza para a barra de tarefas.
+- **Linux**: o ícone da bandeja precisa de um painel com AppIndicator (`libayatana-appindicator3-1`); sem ele, Sair fica em Ajustes > Geral. No Wayland, o aviso ao copiar ou salvar é uma notificação do desktop.
 
 No Windows, o desinstalador do setup.exe encerra o Takeshot, remove a entrada de iniciar com o sistema (uma atualização a mantém) e pode apagar as configurações. O MSI instala para todos os usuários, pede administrador e deixa a entrada de login.
 
@@ -316,7 +316,7 @@ Um processo residente por usuário cuida da bandeja, dos atalhos e da janela pri
 | Interface | egui e eframe 0.37 (glow), Roboto e ícones Lucide embutidos |
 | Desenho | tiny-skia, ab_glyph, image |
 | Captura de tela | xcap (Windows, macOS, X11) e o portal do desktop (Wayland) |
-| Sistema | tray-icon, global-hotkey, arboard, interprocess, auto-launch, rfd, trash |
+| Sistema | tray-icon, global-hotkey, arboard, interprocess, auto-launch, rfd, trash, notify-rust (Linux) |
 | Instaladores | cargo-packager (NSIS, WiX, app, deb, AppImage) e create-dmg (dmg) |
 | CI | GitHub Actions: fmt, clippy e testes em Windows, macOS e Linux em todo pull request; uma release de um botão gera os instaladores e publica |
 

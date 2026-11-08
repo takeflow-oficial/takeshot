@@ -2,7 +2,9 @@
 //!
 //! On Windows and macOS the root viewport is an invisible host, so egui keeps running passes and
 //! can open the tray menu while the main window (a child viewport) is hidden. On Linux the root is
-//! the main window itself: the desktop draws the tray menu, so nothing needs a pass while hidden.
+//! the main window itself and a window cannot hide on Wayland: hiding closes it, the resident goes
+//! on with no window (`system::headless`, where the desktop draws the tray menu) and the next show
+//! makes a new one.
 
 use crate::Shared;
 use crate::screens::about::{self, AboutAnswer, AboutInfo};
@@ -12,7 +14,7 @@ use crate::system::actions;
 use crate::system::hotkeys::{Shot, effective_status, should_offer_priority};
 use crate::system::instance::Page;
 use crate::system::resident::{
-    Resident, ResidentEvent, XAction, hide_command, left_click, on_wayland, on_x, remembered,
+    Resident, ResidentEvent, XAction, left_click, on_wayland, on_x, remembered,
 };
 use crate::system::tray::{TrayAction, TrayEntry, TrayEvent, tray_entries};
 use crate::ui::i18n::{Msg, t as tr};
@@ -53,12 +55,17 @@ pub struct Shell {
     /// The main window's icon, decoded once per theme.
     icon: Option<(crate::ui::tokens::ThemeId, Arc<egui::IconData>)>,
     quitting: bool,
+    /// The window was told to close (hidden to the tray, or to be replaced): its close request
+    /// is ours, not the user's X.
+    leaving: bool,
+    /// The window closes to be replaced by a new one.
+    reopen: bool,
+    /// The page the next window opens on, asked for while there was no window.
+    page: Option<Page>,
     /// Quit was chosen: the next tick asks the other windows.
     quit_asked: bool,
     /// A Quit waiting for the editors, pinned pictures and capture to answer.
     quit_run: Option<crate::system::instance::QuitRun>,
-    /// The first frame ran (the start-up hide happens once).
-    started: bool,
     /// Bumped by the recents thread, so the Linux native menu is rebuilt when the list changes.
     recents_version: Arc<std::sync::atomic::AtomicU64>,
     menu_version: u64,
@@ -81,15 +88,55 @@ impl Shell {
             mark: None,
             icon: None,
             quitting: false,
+            leaving: false,
+            reopen: false,
+            page: None,
             quit_asked: false,
             quit_run: None,
-            started: false,
             recents_version: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             menu_version: u64::MAX,
             next_recents: 0.0,
             tray_theme: None,
             lang: None,
         }
+    }
+
+    /// The first window opens on `page` (`--page`), when one was named.
+    pub fn with_page(mut self, page: Option<Page>) -> Self {
+        self.page = page;
+        self
+    }
+
+    /// A main window should be on screen (Linux: the loop opens one when there is none).
+    pub fn wants_window(&self) -> bool {
+        self.main_open
+    }
+
+    /// Quit was confirmed: the process is about to end.
+    pub fn is_quitting(&self) -> bool {
+        self.quitting
+    }
+
+    /// The page the next window opens on, if one was asked for while there was none.
+    pub fn take_page(&mut self) -> Option<Page> {
+        self.page.take()
+    }
+
+    /// The window is gone (Linux). A window nobody asked to replace stays gone.
+    pub fn window_closed(&mut self) {
+        self.leaving = false;
+        if !std::mem::take(&mut self.reopen) {
+            self.main_open = false;
+        }
+        self.close_prompt = None;
+        // Textures belong to the window's context.
+        self.mark = None;
+    }
+
+    /// Whether a close request is the user's X (and gets the close prompt or the setting's
+    /// answer), not the close the resident asked for.
+    fn intercepts_close(&self) -> bool {
+        !self.quitting && !self.leaving
     }
 
     /// Keeps the recent captures fresh (every 30 s) and the Linux native menu in step with them
@@ -180,7 +227,7 @@ impl Shell {
         &mut self,
         ctx: &egui::Context,
         ev: ResidentEvent,
-        home: &mut Home,
+        home: Option<&mut Home>,
         shared: &mut Shared,
     ) {
         match ev {
@@ -217,7 +264,13 @@ impl Shell {
         }
     }
 
-    fn run(&mut self, ctx: &egui::Context, a: TrayAction, home: &mut Home, shared: &mut Shared) {
+    fn run(
+        &mut self,
+        ctx: &egui::Context,
+        a: TrayAction,
+        home: Option<&mut Home>,
+        shared: &mut Shared,
+    ) {
         match a {
             TrayAction::Capture(s) => self.capture(ctx, s),
             TrayAction::CaptureIn3s => {
@@ -257,25 +310,39 @@ impl Shell {
         }
     }
 
-    fn show(&mut self, ctx: &egui::Context, home: &mut Home, page: Page) {
+    fn show(&mut self, ctx: &egui::Context, home: Option<&mut Home>, page: Page) {
+        self.show_in(ctx, home, page, on_wayland());
+    }
+
+    /// Shows the main window on `page`: brought forward where it is, or replaced by a new one
+    /// where the compositor will not raise it. With no window yet the page waits for the next.
+    fn show_in(&mut self, ctx: &egui::Context, home: Option<&mut Home>, page: Page, wayland: bool) {
+        let focused = ctx.input(|i| i.viewport().focused);
+        let replace = !self.hosted && needs_new_window(self.main_open, focused, wayland);
         self.main_open = true;
-        let id = self.main_viewport();
-        if !self.hosted {
-            ctx.send_viewport_cmd_to(id, Cmd::Visible(true));
-        }
-        ctx.send_viewport_cmd_to(id, Cmd::Minimized(false));
-        ctx.send_viewport_cmd_to(id, Cmd::Focus);
-        if page == Page::About {
-            self.about = true;
+        if replace {
+            self.leaving = true;
+            self.reopen = true;
+            ctx.send_viewport_cmd(Cmd::Close);
         } else {
-            home.open(page);
+            let id = self.main_viewport();
+            ctx.send_viewport_cmd_to(id, Cmd::Minimized(false));
+            ctx.send_viewport_cmd_to(id, Cmd::Focus);
+        }
+        match home {
+            _ if page == Page::About => self.about = true,
+            Some(home) if !replace => home.open(page),
+            _ => self.page = Some(page),
         }
     }
 
+    /// Hides the main window to the tray: on Windows and macOS the child viewport just stops
+    /// being drawn; on Linux the window closes, since Wayland cannot hide one.
     fn hide(&mut self, ctx: &egui::Context) {
         self.main_open = false;
         if !self.hosted {
-            ctx.send_viewport_cmd_to(ViewportId::ROOT, hide_command(on_wayland()));
+            self.leaving = true;
+            ctx.send_viewport_cmd(Cmd::Close);
         }
     }
 
@@ -313,10 +380,8 @@ impl Shell {
             .iter()
             .map(|pid| instance::child_endpoint(&base, *pid))
             .collect();
-        let wake = ctx.clone();
-        self.quit_run = Some(instance::QuitRun::start(names, move || {
-            wake.request_repaint()
-        }));
+        let wake = resident.sender();
+        self.quit_run = Some(instance::QuitRun::start(names, move || wake.wake()));
         self.check_quit(ctx);
     }
 
@@ -348,12 +413,6 @@ impl Shell {
         shared: &mut Shared,
     ) {
         let ctx = ui.ctx().clone();
-        // A window the root could not start hidden (--minimized on Wayland) leaves on the first
-        // frame, once: after that the user may bring it back from the taskbar. On X11 the hidden
-        // root runs no frame until it is shown.
-        if !std::mem::replace(&mut self.started, true) && !self.hosted && !self.main_open {
-            ctx.send_viewport_cmd_to(ViewportId::ROOT, hide_command(on_wayland()));
-        }
         let hook = crate::system::resident::wants_hook(&shared.settings);
         if cfg!(windows) && resident.priority_on() != hook {
             resident.set_priority(hook);
@@ -405,7 +464,7 @@ impl Shell {
                 if let MenuOutcome::Chosen(a) =
                     self.menu.show(&ctx, &t, &entries, (state, &text), &thumb)
                 {
-                    self.run(&ctx, a, home, shared);
+                    self.run(&ctx, a, Some(home), shared);
                 }
             }
         } else {
@@ -423,7 +482,7 @@ impl Shell {
         shared: &mut Shared,
     ) {
         let ctx = ui.ctx().clone();
-        if ui.input(|i| i.viewport().close_requested()) && !self.quitting {
+        if ui.input(|i| i.viewport().close_requested()) && self.intercepts_close() {
             ctx.send_viewport_cmd(Cmd::CancelClose);
             match on_x(shared.settings.on_close) {
                 XAction::Ask => self.close_prompt = Some(true),
@@ -555,6 +614,13 @@ impl Shell {
     }
 }
 
+/// Whether showing the main window means making a new one: on Wayland a client cannot focus its
+/// window or bring it back from minimized, so one that is not in front is replaced (the new window
+/// opens on the workspace the user is on).
+fn needs_new_window(window_open: bool, focused: Option<bool>, wayland: bool) -> bool {
+    wayland && window_open && focused != Some(true)
+}
+
 /// Stores a fresh list of recent captures; the version (which rebuilds the Linux native menu, closing
 /// it if open) moves only when the list changed. True when it changed.
 fn store_recents(
@@ -598,6 +664,105 @@ fn draw_toast(ctx: &egui::Context, shared: &mut Shared) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The commands `f` sent to the root window during one pass.
+    fn commands(f: impl FnOnce(&egui::Context)) -> Vec<Cmd> {
+        let ctx = egui::Context::default();
+        let mut f = Some(f);
+        let mut full = ctx.run_ui(egui::RawInput::default(), |ui| {
+            if let Some(f) = f.take() {
+                f(ui.ctx());
+            }
+        });
+        full.textures_delta.clear();
+        full.viewport_output
+            .remove(&ViewportId::ROOT)
+            .map(|v| v.commands)
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn hiding_closes_the_window_where_the_root_is_the_window() {
+        // Linux: the window cannot hide on Wayland, so it is destroyed and made again.
+        let mut shell = Shell::new(false, true);
+        assert!(shell.intercepts_close(), "the X is the user's to answer");
+        let sent = commands(|ctx| shell.hide(ctx));
+        assert!(sent.contains(&Cmd::Close), "{sent:?}");
+        assert!(!shell.main_open);
+        assert!(
+            !shell.intercepts_close(),
+            "the close we asked for must not be asked about again"
+        );
+        shell.window_closed();
+        assert!(shell.intercepts_close(), "the next window asks again");
+    }
+
+    #[test]
+    fn hiding_the_hosted_window_closes_nothing() {
+        // Windows and macOS: the child viewport just stops being drawn.
+        let mut shell = Shell::new(true, true);
+        let sent = commands(|ctx| shell.hide(ctx));
+        assert!(!sent.contains(&Cmd::Close), "{sent:?}");
+        assert!(!shell.main_open);
+        assert!(shell.intercepts_close());
+    }
+
+    #[test]
+    fn a_window_that_closed_on_its_own_stays_closed() {
+        // Nothing asked for another one: no loop of windows opening and closing.
+        let mut shell = Shell::new(false, true);
+        shell.window_closed();
+        assert!(!shell.main_open);
+    }
+
+    #[test]
+    fn showing_without_a_window_asks_for_one_on_that_page() {
+        let mut shell = Shell::new(false, false);
+        let mut shared = Shared::for_tests();
+        let ctx = egui::Context::default();
+        shell.handle(&ctx, ResidentEvent::Show(Page::Settings), None, &mut shared);
+        assert!(shell.wants_window());
+        assert_eq!(shell.take_page(), Some(Page::Settings));
+        assert_eq!(shell.take_page(), None, "the page is used once");
+        shell.handle(&ctx, ResidentEvent::Show(Page::About), None, &mut shared);
+        assert!(shell.about, "About is a dialog of the new window");
+        assert_eq!(shell.take_page(), None);
+    }
+
+    #[test]
+    fn a_window_the_compositor_will_not_raise_is_made_again() {
+        // Wayland drops a client's request to focus itself (and to leave the minimized state);
+        // a new window comes up on the workspace the user is on.
+        assert!(needs_new_window(true, Some(false), true), "unfocused");
+        assert!(needs_new_window(true, None, true), "unknown focus");
+        assert!(
+            !needs_new_window(true, Some(true), true),
+            "already in front"
+        );
+        assert!(
+            !needs_new_window(true, Some(false), false),
+            "X11 can focus it"
+        );
+        assert!(!needs_new_window(false, None, true), "no window to replace");
+    }
+
+    #[test]
+    fn showing_an_unfocused_wayland_window_replaces_it_on_the_page_asked() {
+        let mut shell = Shell::new(false, true);
+        let sent = commands(|ctx| shell.show_in(ctx, None, Page::Style, true));
+        assert!(sent.contains(&Cmd::Close), "{sent:?}");
+        assert!(shell.main_open, "a window is still wanted");
+        assert!(!shell.intercepts_close());
+        shell.window_closed();
+        assert!(shell.wants_window(), "the loop opens the replacement");
+        assert_eq!(shell.take_page(), Some(Page::Style));
+
+        // Not on Wayland: the window is brought forward where it is.
+        let mut shell = Shell::new(false, true);
+        let sent = commands(|ctx| shell.show_in(ctx, None, Page::Start, false));
+        assert!(!sent.contains(&Cmd::Close), "{sent:?}");
+        assert!(sent.contains(&Cmd::Focus), "{sent:?}");
+    }
 
     #[test]
     fn the_tray_icon_follows_the_theme() {
