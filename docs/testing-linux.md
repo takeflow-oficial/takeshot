@@ -36,3 +36,14 @@ These need a desktop session and go through by hand before a release (a VM or a 
 | `.AppImage` | X11, Xvfb, no GTK installed (only the AppImage excludelist's libraries) | Style drawn whole: GTK and its libraries come from the AppImage |
 
 The AppImage, like every AppImage, expects the libraries of AppImageCommunity's excludelist (glibc, GL, X11, fontconfig, freetype, harfbuzz, fribidi and a few more) from the system: any desktop has them, a bare container does not, so the script installs exactly those.
+
+### The resident's window
+
+2026-11-08, the branch that fixed [takeflow-oficial/takeshot#4](https://github.com/takeflow-oficial/takeshot/issues/4) and [#5](https://github.com/takeflow-oficial/takeshot/issues/5), the same containers (`scripts/linux-smoke.sh resident`):
+
+| Session | Result |
+|---|---|
+| X11, Xvfb with openbox, no tray host | The hidden start showed the window after 30 s; the X only minimized it; a second launch brought it back |
+| Wayland, sway with swaybar as the tray host, mako | The hidden start had no window. Three times: a second launch showed the window, the X destroyed it, the resident stayed. The saved notice reached mako and opened no window |
+
+By hand on Kubuntu (Plasma 6.6.6, Wayland), with the `.deb` of that branch: minimizing to the tray leaves nothing in the taskbar, the window comes back from the tray and from a second launch, and Copy and Save show a desktop notification.
