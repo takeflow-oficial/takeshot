@@ -170,6 +170,12 @@ impl Resident {
         self.queue.drain()
     }
 
+    /// Whether the tray icon is made and a panel shows it: hiding the window to the tray is
+    /// only a way to leave it when there is a way back.
+    pub fn tray_shown(&self) -> bool {
+        self.tray.is_some() && crate::system::tray::shown()
+    }
+
     /// The end that wakes whichever context the resident draws on now.
     pub fn sender(&self) -> Sender {
         self.sender.clone()

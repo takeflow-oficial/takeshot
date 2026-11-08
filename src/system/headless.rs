@@ -64,6 +64,34 @@ pub fn pass<T>(ctx: &egui::Context, now: f64, f: impl FnOnce(&egui::Context) -> 
     out
 }
 
+/// How long a hidden start waits for a panel that shows the tray icon before it shows the window
+/// (at login the panel may come up after the app).
+pub const TRAY_WAIT: Duration = Duration::from_secs(30);
+
+/// How often a hidden start looks for the tray while it waits.
+pub const TRAY_POLL: Duration = Duration::from_secs(2);
+
+/// What a hidden start does about the tray.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum TrayWait {
+    /// The tray is shown: stay hidden.
+    Done,
+    /// Not yet: look again.
+    Keep,
+    /// None came: show the window, or the app stays unseen.
+    GiveUp,
+}
+
+pub fn tray_wait(waited: Duration, shown: bool) -> TrayWait {
+    if shown {
+        TrayWait::Done
+    } else if waited >= TRAY_WAIT {
+        TrayWait::GiveUp
+    } else {
+        TrayWait::Keep
+    }
+}
+
 /// What the resident does after a window closed or a pass ran.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Next {
@@ -162,6 +190,21 @@ mod tests {
         let ctx = context(&Idle::default());
         assert_eq!(pass(&ctx, 12.5, |c| c.input(|i| i.time)), 12.5);
         assert_eq!(pass(&ctx, 40.0, |c| c.input(|i| i.time)), 40.0);
+    }
+
+    #[test]
+    fn a_hidden_start_waits_for_a_tray_then_shows_the_window() {
+        // At login the panel may come up after the app; with none, the app must not stay unseen.
+        let at = |secs| Duration::from_secs(secs);
+        assert_eq!(tray_wait(at(0), true), TrayWait::Done);
+        assert_eq!(tray_wait(at(5), false), TrayWait::Keep);
+        assert_eq!(tray_wait(TRAY_WAIT - at(1), false), TrayWait::Keep);
+        assert_eq!(tray_wait(TRAY_WAIT, false), TrayWait::GiveUp);
+        assert_eq!(
+            tray_wait(TRAY_WAIT + at(9), true),
+            TrayWait::Done,
+            "a late tray still wins"
+        );
     }
 
     #[test]

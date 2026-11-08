@@ -135,6 +135,41 @@ pub fn action_for_id(id: &str, recents: &[PathBuf], shift: bool) -> Option<TrayA
     })
 }
 
+/// Whether a panel will show the tray icon. Linux: a StatusNotifier host is registered on the
+/// session bus (KDE, XFCE, GNOME with the AppIndicator extension; stock GNOME has none). The
+/// icon registers anyway and appears once a panel does, but until then hiding the window to the
+/// tray would leave no way back. Elsewhere the system always has one.
+pub fn shown() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        // The bus answers in milliseconds; a stuck one must not hold the UI, and "no" is the safe answer.
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(host_registered());
+        });
+        rx.recv_timeout(std::time::Duration::from_millis(500))
+            .unwrap_or(false)
+    }
+    #[cfg(not(target_os = "linux"))]
+    true
+}
+
+#[cfg(target_os = "linux")]
+fn host_registered() -> bool {
+    use zbus::blocking::{Connection, Proxy};
+    let Ok(bus) = Connection::session() else {
+        return false;
+    };
+    Proxy::new(
+        &bus,
+        "org.kde.StatusNotifierWatcher",
+        "/StatusNotifierWatcher",
+        "org.kde.StatusNotifierWatcher",
+    )
+    .and_then(|watcher| watcher.get_property::<bool>("IsStatusNotifierHostRegistered"))
+    .unwrap_or(false)
+}
+
 /// Whether the Windows taskbar is dark (it decides the tray glyph colour). Elsewhere the panel is
 /// assumed dark; macOS uses a template icon that the system tints.
 #[cfg(windows)]

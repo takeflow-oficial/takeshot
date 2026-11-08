@@ -447,6 +447,23 @@ impl App {
         }
     }
 
+    /// A panel shows the resident's tray icon.
+    fn tray_shown(&self) -> bool {
+        matches!(&self.mode, Mode::Resident { resident, .. } if resident.tray_shown())
+    }
+
+    /// Opens the main window (Linux), as the tray's "Open" would.
+    fn show_main(&mut self, ctx: &egui::Context) {
+        if let Mode::Resident { home, shell, .. } = &mut self.mode {
+            shell.handle(
+                ctx,
+                system::resident::ResidentEvent::Show(system::instance::Page::Start),
+                home.as_deref_mut(),
+                &mut self.shared,
+            );
+        }
+    }
+
     /// The resident wants a main window on screen.
     fn wants_window(&self) -> bool {
         matches!(&self.mode, Mode::Resident { shell, .. } if shell.wants_window())
@@ -974,7 +991,7 @@ fn run_resident_windows(
     settings: settings::Settings,
     listener: Option<system::instance::Listener>,
 ) -> eframe::Result {
-    use system::headless::{self, Next};
+    use system::headless::{self, Next, TrayWait};
     let idle = headless::Idle::default();
     let headless_ctx = headless::context(&idle);
     let shared = Shared::new(settings, run_overrides(args));
@@ -997,6 +1014,8 @@ fn run_resident_windows(
         quit_close: Arc::new(AtomicBool::new(false)),
     }));
     let since = std::time::Instant::now();
+    // A hidden start waits for a panel to show the tray icon: without one it is unseen for good.
+    let mut waiting_for_tray = args.minimized;
     loop {
         let step = {
             let a = app.borrow();
@@ -1025,12 +1044,30 @@ fn run_resident_windows(
                 app.borrow_mut().detach(&headless_ctx);
             }
             Next::Wait => {
-                headless::pass(&headless_ctx, since.elapsed().as_secs_f64(), |ctx| {
+                let now = since.elapsed();
+                headless::pass(&headless_ctx, now.as_secs_f64(), |ctx| {
                     app.borrow_mut().pump(ctx)
                 });
+                if waiting_for_tray {
+                    let shown = app.borrow().tray_shown();
+                    match headless::tray_wait(now, shown) {
+                        TrayWait::Keep => {}
+                        TrayWait::Done => waiting_for_tray = false,
+                        TrayWait::GiveUp => {
+                            waiting_for_tray = false;
+                            headless::pass(&headless_ctx, now.as_secs_f64(), |ctx| {
+                                app.borrow_mut().show_main(ctx)
+                            });
+                        }
+                    }
+                }
                 let a = app.borrow();
                 if headless::next(a.wants_window(), a.is_quitting()) == Next::Wait {
-                    idle.sleep(HEARTBEAT);
+                    idle.sleep(if waiting_for_tray {
+                        headless::TRAY_POLL
+                    } else {
+                        HEARTBEAT
+                    });
                 }
             }
         }

@@ -337,12 +337,17 @@ impl Shell {
     }
 
     /// Hides the main window to the tray: on Windows and macOS the child viewport just stops
-    /// being drawn; on Linux the window closes, since Wayland cannot hide one.
-    fn hide(&mut self, ctx: &egui::Context) {
-        self.main_open = false;
-        if !self.hosted {
+    /// being drawn; on Linux the window closes, since Wayland cannot hide one. With no panel
+    /// showing the tray icon (`tray_shown` false) it only minimizes, the way back.
+    fn hide(&mut self, ctx: &egui::Context, tray_shown: bool) {
+        if self.hosted {
+            self.main_open = false;
+        } else if tray_shown {
+            self.main_open = false;
             self.leaving = true;
             ctx.send_viewport_cmd(Cmd::Close);
+        } else {
+            ctx.send_viewport_cmd(Cmd::Minimized(true));
         }
     }
 
@@ -486,7 +491,7 @@ impl Shell {
             ctx.send_viewport_cmd(Cmd::CancelClose);
             match on_x(shared.settings.on_close) {
                 XAction::Ask => self.close_prompt = Some(true),
-                XAction::Hide => self.hide(&ctx),
+                XAction::Hide => self.hide(&ctx, resident.tray_shown()),
                 XAction::Quit => self.quit(&ctx),
             }
         }
@@ -558,7 +563,7 @@ impl Shell {
                 }
                 match choice {
                     XAction::Quit => self.quit(ctx),
-                    XAction::Hide => self.hide(ctx),
+                    XAction::Hide => self.hide(ctx, resident.tray_shown()),
                     XAction::Ask => {}
                 }
             }
@@ -686,7 +691,7 @@ mod tests {
         // Linux: the window cannot hide on Wayland, so it is destroyed and made again.
         let mut shell = Shell::new(false, true);
         assert!(shell.intercepts_close(), "the X is the user's to answer");
-        let sent = commands(|ctx| shell.hide(ctx));
+        let sent = commands(|ctx| shell.hide(ctx, true));
         assert!(sent.contains(&Cmd::Close), "{sent:?}");
         assert!(!shell.main_open);
         assert!(
@@ -698,10 +703,22 @@ mod tests {
     }
 
     #[test]
+    fn without_a_tray_to_come_back_from_the_window_is_only_minimized() {
+        // GNOME without the AppIndicator extension shows no tray icon: a window destroyed there
+        // could only be brought back by starting the app again.
+        let mut shell = Shell::new(false, true);
+        let sent = commands(|ctx| shell.hide(ctx, false));
+        assert!(sent.contains(&Cmd::Minimized(true)), "{sent:?}");
+        assert!(!sent.contains(&Cmd::Close), "{sent:?}");
+        assert!(shell.wants_window(), "the window is still there");
+        assert!(shell.intercepts_close(), "and its X still asks");
+    }
+
+    #[test]
     fn hiding_the_hosted_window_closes_nothing() {
         // Windows and macOS: the child viewport just stops being drawn.
         let mut shell = Shell::new(true, true);
-        let sent = commands(|ctx| shell.hide(ctx));
+        let sent = commands(|ctx| shell.hide(ctx, true));
         assert!(!sent.contains(&Cmd::Close), "{sent:?}");
         assert!(!shell.main_open);
         assert!(shell.intercepts_close());

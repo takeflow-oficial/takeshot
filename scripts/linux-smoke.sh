@@ -72,7 +72,7 @@ fi
 if want resident; then
   echo "== deb on X11: the resident's window comes and goes"
   run "
-    get /pk/$deb xvfb xauth libgl1-mesa-dri openbox wmctrl procps dbus dbus-bin
+    get /pk/$deb xvfb xauth libgl1-mesa-dri openbox wmctrl x11-utils procps dbus dbus-bin
     dbus-run-session -- bash /t/resident-check.sh x11
   "
 
