@@ -461,7 +461,14 @@ impl eframe::App for App {
             Switch::ToEditor(e) => self.switch_to_editor(&ctx, e),
             Switch::ToNotice(n) => {
                 self.shared.settings.save();
-                self.switch_to_notice(&ctx, n);
+                if system::notify::native_notices() {
+                    // The capture window is full screen and Wayland would keep it so: the
+                    // desktop shows the notice and the window leaves at once.
+                    system::notify::show(n.for_desktop());
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                } else {
+                    self.switch_to_notice(&ctx, n);
+                }
             }
             Switch::Close => {
                 self.shared.settings.save();
@@ -624,6 +631,12 @@ fn main() -> eframe::Result {
                     return Ok(());
                 }
                 if !settings.show_bubbles {
+                    return Ok(());
+                }
+                if system::notify::native_notices() {
+                    // No window at all for the notice: the desktop shows it.
+                    system::notify::show(notice::Notice::saved(path).for_desktop());
+                    system::notify::wait_pending();
                     return Ok(());
                 }
                 vp = vp
@@ -865,6 +878,7 @@ fn main() -> eframe::Result {
         }),
     );
     actions::wait_clipboard_keepers();
+    system::notify::wait_pending();
     res
 }
 

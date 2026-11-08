@@ -11,6 +11,7 @@ pub mod instance;
 pub mod library;
 #[cfg(target_os = "macos")]
 pub mod mac_titlebar;
+pub mod notify;
 pub mod prtsc_hook;
 pub mod recents;
 pub mod resident;

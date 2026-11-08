@@ -3,6 +3,7 @@
 //! closes on its own.
 
 use crate::Switch;
+use crate::system::notify::Spec;
 use crate::ui::i18n::{Msg, t as tr, tf};
 use crate::ui::kit::Ico;
 use crate::ui::style::{Weight, font};
@@ -55,6 +56,19 @@ impl Notice {
             icon: Ico::Download,
             path: Some(path),
             started: None,
+        }
+    }
+
+    /// The same words as a desktop notification, with the folder a click opens.
+    pub fn for_desktop(&self) -> Spec {
+        Spec {
+            title: self.title.clone(),
+            body: self.hint.clone(),
+            folder: self
+                .path
+                .as_ref()
+                .and_then(|p| p.parent())
+                .map(PathBuf::from),
         }
     }
 
@@ -184,6 +198,33 @@ mod tests {
                     "{l:?}: {texts:?}"
                 );
             }
+        }
+        set_lang(before);
+    }
+
+    #[test]
+    fn the_desktop_notification_says_what_the_notice_says() {
+        use crate::ui::i18n::{Lang, Msg, lang, set_lang, t as tr, tf};
+        let before = lang();
+        for l in [Lang::Pt, Lang::En] {
+            set_lang(l);
+            let copied = Notice::copied().for_desktop();
+            assert_eq!(copied.title, tr(Msg::NoticeCopied));
+            assert!(
+                copied.body.contains("V"),
+                "{l:?}: the paste keys in {copied:?}"
+            );
+            assert_eq!(copied.folder, None, "a copy has no folder to open");
+
+            let path = PathBuf::from("pics").join("a.png");
+            let saved = Notice::saved(path).for_desktop();
+            assert_eq!(saved.title, tr(Msg::NoticeSaved));
+            assert_eq!(saved.body, tf(Msg::NoticeSavedHint, &["a.png"]));
+            assert_eq!(
+                saved.folder,
+                Some(PathBuf::from("pics")),
+                "a click opens the folder of the file"
+            );
         }
         set_lang(before);
     }
