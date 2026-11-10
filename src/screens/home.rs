@@ -560,9 +560,11 @@ impl Home {
         }
         // A text field keeps its own paste and shortcuts.
         if !ctx.text_edit_focused() {
-            if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::V))
-                || ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Paste(_))))
-            {
+            if ui.input(|i| {
+                i.events
+                    .iter()
+                    .any(|e| matches!(e, egui::Event::Paste(_) | egui::Event::PasteImage(_)))
+            }) {
                 acts.push(MainAction::Paste);
             }
             if ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::O)) {
@@ -782,7 +784,7 @@ fn open_clipboard(shared: &mut Shared) {
                 let _ = crate::system::actions::spawn_self(&["--edit", &p.to_string_lossy()]);
             }
         }
-        None => shared.toast("Não há imagem na área de transferência".into()),
+        None => shared.toast(tr(Msg::NoImageToPaste).into()),
     }
 }
 

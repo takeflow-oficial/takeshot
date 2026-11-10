@@ -1038,6 +1038,28 @@ mod tests {
         assert!(!acts.contains(&MainAction::OpenImage), "{acts:?}");
     }
 
+    #[test]
+    fn a_pasted_image_opens_unless_search_has_the_keyboard() {
+        let (mut home, mut shared) = Home::for_tests(vec![entry("a.png", SystemTime::now())]);
+        let image = egui::Event::PasteImage(std::sync::Arc::new(egui::ColorImage::filled(
+            [2, 2],
+            egui::Color32::RED,
+        )));
+        let (acts, painted) = run(
+            &mut home,
+            &mut shared,
+            (1160.0, 740.0),
+            true,
+            vec![vec![image.clone()]],
+        );
+        assert!(acts.contains(&MainAction::Paste), "{acts:?}");
+        let search = painted_at(&painted, &every(Msg::SearchByName), |_| true).unwrap();
+        let mut frames = click(search);
+        frames.push(vec![image]);
+        let (acts, _) = run(&mut home, &mut shared, (1160.0, 740.0), true, frames);
+        assert!(!acts.contains(&MainAction::Paste), "{acts:?}");
+    }
+
     fn delete_key() -> egui::Event {
         egui::Event::Key {
             key: egui::Key::Delete,
