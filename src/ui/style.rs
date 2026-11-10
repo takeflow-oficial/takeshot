@@ -72,6 +72,7 @@ pub fn apply(ctx: &egui::Context, t: &Tokens) {
         w.noninteractive.bg_stroke = Stroke::new(1.0, t.border);
 
         s.animation_time = 0.08;
+        s.interaction.selectable_labels = false;
         // The spacing every window was measured with (egui's own is tighter).
         s.spacing.item_spacing = egui::vec2(8.0, 8.0);
         s.spacing.button_padding = egui::vec2(10.0, 5.0);
@@ -137,6 +138,29 @@ mod tests {
         // A floating bar widens on hover and covers the content; a solid one keeps its room.
         assert!(!scroll.floating);
         assert_eq!(scroll.bar_inner_margin, 8.0);
+    }
+
+    #[test]
+    fn a_label_keeps_the_arrow_pointer() {
+        let ctx = egui::Context::default();
+        apply(&ctx, &tokens(ThemeId::TakeUi, true));
+        let mut pointer = egui::CursorIcon::Default;
+        for events in [
+            vec![],
+            vec![egui::Event::PointerMoved(egui::pos2(20.0, 12.0))],
+            vec![],
+        ] {
+            let input = egui::RawInput {
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                ui.label("2026-11-10 12-04-59.png");
+            });
+            out.textures_delta.clear();
+            pointer = out.platform_output.cursor_icon;
+        }
+        assert_eq!(pointer, egui::CursorIcon::Default);
     }
 
     #[test]
