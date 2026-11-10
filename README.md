@@ -192,13 +192,7 @@ Installers: `cargo install cargo-packager --version 0.11.8 --locked`, then `carg
 
 ## Contributing
 
-Contributions are welcome, by people and by AI agents alike: [AGENTS.md](AGENTS.md) holds the rules for both.
-
-1. Branch `feat/<topic>` or `fix/<topic>` from `main`.
-2. Keep `cargo fmt --check` and `cargo clippy --all-targets -- -D warnings` at zero, and `cargo test` green. `git config core.hooksPath .githooks` runs `scripts/check.sh` (the same checks, plus Linux and macOS in a container) before each push.
-3. A visible change looks right in all four looks (TakeUI and Coral UI, light and dark): attach the screenshots from `scripts/screenshots.sh`.
-4. Every user-facing string is a key in `src/ui/i18n.rs`, in English and Portuguese.
-5. Write commit messages in [Conventional Commits](https://www.conventionalcommits.org/) and fill in the pull request template.
+Contributions are welcome, by people and by AI agents alike. [CONTRIBUTING.md](CONTRIBUTING.md) is the path from an idea to a merged pull request (set up, checks, pull requests and releases), and [AGENTS.md](AGENTS.md) holds the rules of the code for both.
 
 ## License
 
@@ -338,13 +332,7 @@ Instaladores: `cargo install cargo-packager --version 0.11.8 --locked`, depois `
 
 ## Contribuindo
 
-Contribuições são bem-vindas, de pessoas e de agentes de IA: as regras para os dois estão no [AGENTS.md](AGENTS.md).
-
-1. Crie a branch `feat/<tema>` ou `fix/<tema>` a partir da `main`.
-2. Mantenha `cargo fmt --check` e `cargo clippy --all-targets -- -D warnings` zerados e `cargo test` verde. `git config core.hooksPath .githooks` roda o `scripts/check.sh` (as mesmas verificações, mais Linux e macOS num container) antes de cada push.
-3. Uma mudança visível fica certa nos quatro visuais (TakeUI e Coral UI, claro e escuro): anexe as capturas do `scripts/screenshots.sh`.
-4. Todo texto da interface é uma chave em `src/ui/i18n.rs`, em inglês e português.
-5. Escreva as mensagens de commit em [Conventional Commits](https://www.conventionalcommits.org/) e preencha o template de PR.
+Contribuições são bem-vindas, de pessoas e de agentes de IA. O [CONTRIBUTING.md](CONTRIBUTING.md) é o caminho de uma ideia até um pull request aceito (ambiente, verificações, pull requests e releases), e o [AGENTS.md](AGENTS.md) tem as regras do código para os dois.
 
 ## Licença
 
