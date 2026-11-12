@@ -29,6 +29,9 @@ fn bar_frame(t: &Tokens) -> Frame {
         })
 }
 
+/// How far an object's handles reach past its bounds, as in the editor's object bar.
+const HANDLE_REACH: f32 = 6.0;
+
 /// The bars once an area is chosen, the hint before. Returns what the user asked for.
 pub fn capture(
     ui: &mut Ui,
@@ -101,12 +104,18 @@ fn bars(
             .unwrap_or(default)
     };
     let bar_tool = ov.an.bar_tool();
+    // The selected object (or the text being typed) with the reach of its handles: the bars keep
+    // off it.
+    let selected = ov
+        .bars_avoid(screen, shared)
+        .map(|r| r.expand(HANDLE_REACH));
     let at = capture_bars(
         area,
         size(tools_id, vec2(46.0, 450.0)),
         bar_tool.map(|_| size(opts_id, vec2(222.0, 240.0))),
         size(actions_id, vec2(380.0, 42.0)),
         screen,
+        selected,
     );
     let part = |id: egui::Id, at: Rect, margin: i8, body: &mut dyn FnMut(&mut Ui)| {
         let shown = egui::Area::new(id)
@@ -360,11 +369,11 @@ fn options_panel(
 #[cfg(test)]
 mod tests {
     use crate::engine::doc::Doc;
-    use crate::engine::model::{Ann, Shape, Tool};
+    use crate::engine::model::{Ann, BlurMode, Shape, Tool};
     use crate::screens::editor::tool_name;
     use crate::screens::overlay::{CaptureAction, Overlay};
     use crate::ui::i18n::{Lang, Msg, lang, set_lang, t as tr};
-    use crate::views::testing::{click, run_capture};
+    use crate::views::testing::{click, run_capture, run_overlay};
     use egui::{Rect, pos2};
 
     /// The 1600 x 900 sample with the area (100,100)-(900,700) and a filled rectangle in it.
@@ -560,6 +569,124 @@ mod tests {
             title.right() < area.left(),
             "options left of the area: {title:?}"
         );
+    }
+
+    /// A whole-screen capture (Ctrl+A) of the 1600 x 900 sample with a blur just drawn in the top
+    /// right corner, selected as `Doc::add` leaves it; returns the blur's rect too.
+    fn corner_blur() -> (Overlay, crate::Shared, Rect) {
+        let shape = Rect::from_min_max(pos2(1330.0, 20.0), pos2(1580.0, 140.0));
+        let shared = crate::Shared::for_tests();
+        let mut ov = Overlay::new(
+            &egui::Context::default(),
+            crate::system::capture::sample_shot(),
+            &shared,
+        )
+        .with_area(Rect::from_min_max(pos2(0.0, 0.0), pos2(1600.0, 900.0)))
+        .with_doc(Tool::Blur, Doc::new());
+        ov.an.doc.add(Ann {
+            shape: Shape::Blur(shape.min, shape.max, BlurMode::Blur),
+            color: [255, 0, 0, 255],
+            width: 4.0,
+            filled: false,
+        });
+        (ov, shared, shape)
+    }
+
+    #[test]
+    fn a_whole_screen_capture_keeps_its_bars_off_a_shape_in_the_corner() {
+        let (mut ov, mut shared, shape) = corner_blur();
+        let (_, p) = run_capture(&mut ov, &mut shared, vec![]);
+        // The shape's selection marks reach a few px past it.
+        let marked = shape.expand(6.0);
+        for (s, r) in &p.texts {
+            assert!(!r.intersects(marked), "{s:?} at {r:?} over the shape");
+        }
+        // The options keep to the screen, under the shape (the name heads the panel).
+        let title = p
+            .texts
+            .iter()
+            .filter(|(s, _)| s == tr(Msg::ToolBlur))
+            .map(|(_, r)| *r)
+            .min_by(|a, b| a.top().total_cmp(&b.top()))
+            .expect("the options panel's title");
+        assert!(
+            title.top() >= shape.bottom() && title.bottom() <= 900.0 - 8.0,
+            "{title:?} under {shape:?}"
+        );
+    }
+
+    #[test]
+    fn a_shape_at_the_bottom_of_a_whole_screen_capture_gets_the_actions_over_it() {
+        let shared = crate::Shared::for_tests();
+        let shape = Rect::from_min_max(pos2(120.0, 780.0), pos2(1580.0, 890.0));
+        let mut ov = Overlay::new(
+            &egui::Context::default(),
+            crate::system::capture::sample_shot(),
+            &shared,
+        )
+        .with_area(Rect::from_min_max(pos2(0.0, 0.0), pos2(1600.0, 900.0)))
+        .with_doc(Tool::Blur, Doc::new());
+        ov.an.doc.add(Ann {
+            shape: Shape::Blur(shape.min, shape.max, BlurMode::Blur),
+            color: [255, 0, 0, 255],
+            width: 4.0,
+            filled: false,
+        });
+        let mut shared = shared;
+        let (_, p) = run_capture(&mut ov, &mut shared, vec![]);
+        for (s, r) in &p.texts {
+            assert!(
+                !r.intersects(shape.expand(6.0)),
+                "{s:?} at {r:?} over the shape"
+            );
+        }
+        // The row sits right over the shape, not in the middle of the screen.
+        let copy = p
+            .texts
+            .iter()
+            .find(|(s, _)| s == tr(Msg::Copy))
+            .map(|(_, r)| *r)
+            .expect("the Copy button");
+        assert!(
+            copy.bottom() <= shape.top() && copy.top() > shape.top() - 80.0,
+            "{copy:?} over {shape:?}"
+        );
+    }
+
+    #[test]
+    fn a_text_typed_in_a_corner_of_a_whole_screen_capture_keeps_the_bars_off_it() {
+        let shared = crate::Shared::for_tests();
+        let mut shared = shared;
+        for at in [pos2(1330.0, 40.0), pos2(1330.0, 830.0)] {
+            let mut ov = Overlay::new(
+                &egui::Context::default(),
+                crate::system::capture::sample_shot(),
+                &shared,
+            )
+            .with_area(Rect::from_min_max(pos2(0.0, 0.0), pos2(1600.0, 900.0)))
+            .with_doc(Tool::Text, Doc::new());
+            ov.an.draft = Some(crate::engine::annotator::TextDraft {
+                pos: at,
+                text: "Pico".into(),
+                started: 1.0,
+                caret: None,
+            });
+            let p = run_overlay(&mut ov, &mut shared, vec![vec![]]);
+            let text = p
+                .texts
+                .iter()
+                .find(|(s, _)| s == "Pico")
+                .map(|(_, r)| *r)
+                .expect("the text being typed");
+            // Its dashed frame reaches 4 px past the letters.
+            let frame = text.expand(4.0);
+            for (s, r) in p.texts.iter().filter(|(s, _)| s != "Pico") {
+                assert!(
+                    !r.intersects(frame),
+                    "{s:?} at {r:?} over the text {frame:?}"
+                );
+            }
+        }
     }
 
     #[test]
