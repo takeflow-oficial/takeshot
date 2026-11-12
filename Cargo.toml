@@ -1,6 +1,6 @@
 [package]
 name = "takeshot"
-version = "0.1.2"
+version = "0.2.0"
 edition = "2024"
 description = "Fast screenshot tool for Windows, macOS and Linux: capture with PrtSc, annotate with editable objects, add backgrounds and watermarks."
 license = "AGPL-3.0-or-later"
