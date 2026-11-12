@@ -20,6 +20,13 @@ fn cursor() -> Option<(i32, i32)> {
 
 /// Capture the monitor under the mouse (or the primary one).
 pub fn grab() -> Result<Shot, String> {
+    #[cfg(target_os = "linux")]
+    if use_portal(
+        crate::system::resident::on_wayland(),
+        std::env::var("XDG_CURRENT_DESKTOP").ok().as_deref(),
+    ) {
+        return grab_wayland();
+    }
     let monitors = xcap::Monitor::all().map_err(|e| e.to_string())?;
     let mon = cursor_monitor(&monitors)
         .or_else(|| monitors.into_iter().next())
@@ -75,6 +82,185 @@ fn shot_of(mon: &xcap::Monitor) -> Result<Shot, String> {
         y: mon.y().unwrap_or(0),
         scale: mon.scale_factor().unwrap_or(1.0).max(0.5),
     })
+}
+
+/// Whether `grab` asks the desktop portal instead of xcap: on a GNOME Wayland session, where
+/// xcap's own Wayland path ends in a wlroots protocol GNOME lacks and hides why its portal
+/// attempt failed. `desktops` is `XDG_CURRENT_DESKTOP`, a colon-separated list (`ubuntu:GNOME`).
+/// KDE and wlroots keep xcap's path: the portal was not tried on them.
+#[cfg(any(target_os = "linux", test))]
+fn use_portal(wayland: bool, desktops: Option<&str>) -> bool {
+    wayland
+        && desktops.is_some_and(|list| {
+            list.split(':')
+                .any(|name| name.trim().eq_ignore_ascii_case("GNOME"))
+        })
+}
+
+/// Wayland lets no app read the screen: the desktop portal takes the picture. The portal gives
+/// the whole desktop; the monitor's part is cut from it, or with no monitor list the whole.
+#[cfg(target_os = "linux")]
+fn grab_wayland() -> Result<Shot, String> {
+    let (desktop, interactive) = portal::screenshot()?;
+    let monitors = xcap::Monitor::all().unwrap_or_default();
+    let Some(mon) = cursor_monitor(&monitors).or_else(|| monitors.first().cloned()) else {
+        return Ok(Shot {
+            image: desktop,
+            x: 0,
+            y: 0,
+            scale: 1.0,
+        });
+    };
+    let frame = |m: &xcap::Monitor| {
+        (
+            m.x().unwrap_or(0),
+            m.y().unwrap_or(0),
+            m.width().unwrap_or(0),
+            m.height().unwrap_or(0),
+        )
+    };
+    let layout: Vec<_> = monitors.iter().map(frame).collect();
+    // The desktop's own picker returns what the user chose there, not the whole desktop.
+    let image = if interactive {
+        desktop
+    } else {
+        let (x, y, w, h) = monitor_part((desktop.width(), desktop.height()), &layout, frame(&mon));
+        image::imageops::crop_imm(&desktop, x, y, w, h).to_image()
+    };
+    Ok(Shot {
+        image,
+        x: mon.x().unwrap_or(0),
+        y: mon.y().unwrap_or(0),
+        scale: mon.scale_factor().unwrap_or(1.0).max(0.5),
+    })
+}
+
+/// Where monitor `m` (x, y, width, height) lies in a picture of size `img` of the whole desktop
+/// laid out as `monitors`. The picture may be in another scale than the monitors' coordinates
+/// (Wayland's fractional scaling), so the layout is stretched to the picture's width.
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+fn monitor_part(
+    img: (u32, u32),
+    monitors: &[(i32, i32, u32, u32)],
+    m: (i32, i32, u32, u32),
+) -> (u32, u32, u32, u32) {
+    let min_x = monitors.iter().map(|r| r.0).min().unwrap_or(0);
+    let min_y = monitors.iter().map(|r| r.1).min().unwrap_or(0);
+    let max_x = monitors
+        .iter()
+        .map(|r| r.0 + r.2 as i32)
+        .max()
+        .unwrap_or(img.0 as i32);
+    let k = img.0 as f32 / (max_x - min_x).max(1) as f32;
+    let x = (((m.0 - min_x) as f32 * k).round() as u32).min(img.0);
+    let y = (((m.1 - min_y) as f32 * k).round() as u32).min(img.1);
+    let w = ((m.2 as f32 * k).round() as u32).min(img.0 - x);
+    let h = ((m.3 as f32 * k).round() as u32).min(img.1 - y);
+    (x, y, w, h)
+}
+
+/// The desktop portal's Screenshot (org.freedesktop.portal.Screenshot), over zbus.
+#[cfg(target_os = "linux")]
+mod portal {
+    use image::RgbaImage;
+    use std::collections::HashMap;
+    use std::time::Duration;
+    use zbus::blocking::{Connection, Proxy};
+    use zbus::zvariant::{OwnedObjectPath, OwnedValue, Value};
+
+    /// The desktop as a picture, and whether the desktop's own picker took it. A quiet request
+    /// comes first; when the desktop refuses it (no permission), its picker asks the user.
+    pub fn screenshot() -> Result<(RgbaImage, bool), String> {
+        match request(false, Duration::from_secs(10)) {
+            Ok(img) => Ok((img, false)),
+            Err(Failure::Refused(2)) => request(true, Duration::from_secs(300))
+                .map(|img| (img, true))
+                .map_err(|e| e.text()),
+            Err(e) => Err(e.text()),
+        }
+    }
+
+    enum Failure {
+        /// The portal answered with this code: 1 cancelled, 2 refused or failed.
+        Refused(u32),
+        Other(String),
+    }
+
+    impl Failure {
+        fn text(&self) -> String {
+            match self {
+                Failure::Refused(1) => "the desktop's screenshot was cancelled".to_string(),
+                Failure::Refused(code) => {
+                    format!("the desktop refused the screenshot (portal response {code})")
+                }
+                Failure::Other(e) => e.clone(),
+            }
+        }
+    }
+
+    fn other(e: impl std::fmt::Display) -> Failure {
+        Failure::Other(format!("desktop portal: {e}"))
+    }
+
+    fn request(interactive: bool, wait: Duration) -> Result<RgbaImage, Failure> {
+        let (tx, rx) = std::sync::mpsc::channel();
+        // A hung portal must not hang the capture: the call runs apart and is waited on.
+        std::thread::spawn(move || {
+            let _ = tx.send(call(interactive));
+        });
+        let uri = rx
+            .recv_timeout(wait)
+            .map_err(|_| other("no answer from the screenshot portal"))??;
+        let (path, _) = gtk::glib::filename_from_uri(&uri).map_err(other)?;
+        let img = image::open(&path).map(|i| i.to_rgba8()).map_err(other);
+        // The portal leaves its picture as a file (GNOME, in the Pictures folder); Takeshot keeps
+        // only what the user saves.
+        let _ = std::fs::remove_file(&path);
+        img
+    }
+
+    /// One Screenshot request; the picture's URI.
+    fn call(interactive: bool) -> Result<String, Failure> {
+        let bus = Connection::session().map_err(other)?;
+        let token = format!("takeshot{}{}", std::process::id(), u8::from(interactive));
+        let sender = bus
+            .unique_name()
+            .ok_or_else(|| other("no bus name"))?
+            .trim_start_matches(':')
+            .replace('.', "_");
+        let path = format!("/org/freedesktop/portal/desktop/request/{sender}/{token}");
+        let request = Proxy::new(
+            &bus,
+            "org.freedesktop.portal.Desktop",
+            path,
+            "org.freedesktop.portal.Request",
+        )
+        .map_err(other)?;
+        // Listening before asking, so a quick answer is not missed.
+        let mut answers = request.receive_signal("Response").map_err(other)?;
+        let portal = Proxy::new(
+            &bus,
+            "org.freedesktop.portal.Desktop",
+            "/org/freedesktop/portal/desktop",
+            "org.freedesktop.portal.Screenshot",
+        )
+        .map_err(other)?;
+        let mut options: HashMap<&str, Value> = HashMap::new();
+        options.insert("handle_token", Value::from(token.as_str()));
+        options.insert("modal", Value::from(true));
+        options.insert("interactive", Value::from(interactive));
+        let _: OwnedObjectPath = portal.call("Screenshot", &("", options)).map_err(other)?;
+        let msg = answers.next().ok_or_else(|| other("no response"))?;
+        let (code, results): (u32, HashMap<String, OwnedValue>) =
+            msg.body().deserialize().map_err(other)?;
+        if code != 0 {
+            return Err(Failure::Refused(code));
+        }
+        results
+            .get("uri")
+            .and_then(|v| String::try_from(v.try_clone().ok()?).ok())
+            .ok_or_else(|| other("no picture in the response"))
+    }
 }
 
 fn fill(pm: &mut sk::Pixmap, x: f32, y: f32, w: f32, h: f32, r: f32, c: [u8; 4]) {
@@ -353,6 +539,46 @@ mod tests {
             let r = work_area(p).expect("a monitor");
             assert!(r.width() > 0.0 && r.height() > 0.0, "{r:?}");
         }
+    }
+
+    #[test]
+    fn only_a_gnome_wayland_session_asks_the_portal() {
+        use super::use_portal;
+        assert!(use_portal(true, Some("ubuntu:GNOME")));
+        assert!(use_portal(true, Some("GNOME")));
+        assert!(use_portal(true, Some("gnome-classic:gnome")));
+        assert!(!use_portal(false, Some("ubuntu:GNOME")), "X11 keeps xcap");
+        assert!(!use_portal(true, Some("KDE")), "KDE keeps xcap");
+        assert!(!use_portal(true, Some("sway")), "wlroots keeps xcap");
+        assert!(!use_portal(true, Some("X-Cinnamon")));
+        assert!(!use_portal(true, None));
+    }
+
+    #[test]
+    fn the_monitor_part_follows_the_layout_and_the_picture_scale() {
+        use super::monitor_part;
+        let two = [(0, 0, 1920, 1080), (1920, 0, 1280, 1024)];
+        // Same scale: the second monitor's own rectangle.
+        assert_eq!(
+            monitor_part((3200, 1080), &two, two[1]),
+            (1920, 0, 1280, 1024)
+        );
+        // A picture twice the layout's size: everything doubles.
+        assert_eq!(
+            monitor_part((6400, 2160), &two, two[1]),
+            (3840, 0, 2560, 2048)
+        );
+        // A monitor left of the origin.
+        let left = [(-1280, 0, 1280, 1024), (0, 0, 1920, 1080)];
+        assert_eq!(
+            monitor_part((3200, 1080), &left, left[1]),
+            (1280, 0, 1920, 1080)
+        );
+        // A layout larger than the picture is cut to it.
+        assert_eq!(
+            monitor_part((1920, 500), &two[..1], two[0]),
+            (0, 0, 1920, 500)
+        );
     }
 
     #[test]
