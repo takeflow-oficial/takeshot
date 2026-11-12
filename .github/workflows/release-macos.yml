@@ -1,0 +1,77 @@
+# The macOS installer of a release made with scripts/release-local.sh: builds the dmg alone (no
+# lint or tests: scripts/check.sh and the pull request's CI already ran them) from the commit the
+# release points to, and attaches it to the release, which stays a draft until a maintainer
+# publishes it. scripts/release-local.sh starts it; by hand: `gh workflow run release-macos -f tag=vX.Y.Z`.
+name: release-macos
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag of an existing release (draft or not), vX.Y.Z
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency: release
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    # The token only sees a draft release with write access to the contents.
+    permissions:
+      contents: write
+    outputs:
+      sha: ${{ steps.read.outputs.sha }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.tag }}
+    steps:
+      - id: read
+        shell: bash
+        run: |
+          if ! echo "$TAG" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::'$TAG' is not a tag like v1.2.3."
+            exit 1
+          fi
+          # A draft has no tag yet: its target is the commit to build. A published release has the tag.
+          release=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,targetCommitish --jq '"\(.isDraft) \(.targetCommitish)"')
+          read -r draft target <<< "$release"
+          if [ "$draft" = "true" ]; then ref="$target"; else ref="$TAG"; fi
+          sha=$(gh api "repos/$GITHUB_REPOSITORY/commits/$ref" --jq .sha)
+          manifest=$(gh api -H 'Accept: application/vnd.github.raw+json' "repos/$GITHUB_REPOSITORY/contents/Cargo.toml?ref=$sha")
+          version=$(grep -m1 '^version' <<< "$manifest" | cut -d'"' -f2)
+          if [ "v$version" != "$TAG" ]; then
+            echo "::error::Cargo.toml says $version at ${sha:0:7}, not ${TAG#v}."
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Building the dmg of $TAG from $sha"
+
+  build:
+    needs: resolve
+    uses: ./.github/workflows/build.yml
+    with:
+      package: true
+      checks: false
+      ref: ${{ needs.resolve.outputs.sha }}
+      targets: '[{"name":"macos-universal","os":"macos-latest"}]'
+    secrets: inherit
+
+  attach:
+    needs: [resolve, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.tag }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      # --clobber: a second run replaces the dmg of the first.
+      - run: gh release upload "$TAG" artifacts/*.dmg --clobber --repo "$GITHUB_REPOSITORY"

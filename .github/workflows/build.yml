@@ -1,5 +1,6 @@
 # Lint and tests on Windows, macOS and Linux and, with `package`, the seven installers as
-# artifacts. ci.yml runs it on pull requests, release.yml before publishing a release.
+# artifacts. ci.yml runs it on pull requests, release.yml before publishing a release and
+# release-macos.yml for the dmg alone (`targets`, `checks: false`, `ref`).
 name: build
 
 on:
@@ -9,6 +10,18 @@ on:
         description: Build the installers too
         type: boolean
         default: false
+      checks:
+        description: Run fmt, clippy and the tests
+        type: boolean
+        default: true
+      targets:
+        description: JSON list of the {name, os} pairs to build on
+        type: string
+        default: '[{"name":"windows-x64","os":"windows-latest"},{"name":"macos-universal","os":"macos-latest"},{"name":"linux-x64","os":"ubuntu-24.04"}]'
+      ref:
+        description: Commit to build (empty is the caller's own)
+        type: string
+        default: ''
 
 env:
   # rust-toolchain.toml pins the MSVC toolchain for local Windows builds; CI uses plain stable.
@@ -23,15 +36,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - name: windows-x64
-            os: windows-latest
-          - name: macos-universal
-            os: macos-latest
-          - name: linux-x64
-            os: ubuntu-24.04
+        include: ${{ fromJSON(inputs.targets) }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.ref }}
 
       - name: Rust
         shell: bash
@@ -52,6 +61,7 @@ jobs:
 
       # bash stops at the first failing command; the Windows default (pwsh) only checks the last one.
       - name: Lint and test
+        if: inputs.checks
         shell: bash
         run: |
           cargo fmt --check

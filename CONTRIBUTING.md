@@ -59,9 +59,10 @@ All three must come back clean: fmt prints nothing, clippy reports no warnings (
 Only maintainers release, so a contributor's pull request never bumps `version`.
 
 1. A pull request raises `version` in `Cargo.toml`.
-2. After it merges, a maintainer runs Actions > release > Run workflow on `main`. The workflow tests, builds the installers, tags `vX.Y.Z` and publishes the GitHub Release.
+2. After it merges, a maintainer runs `scripts/release-local.sh vX.Y.Z` on `main`. It checks the code, builds the Windows and Linux installers on their PC, has GitHub build the macOS one, and puts all seven on a draft release.
+3. The maintainer publishes the draft, which creates the tag `vX.Y.Z`.
 
-The workflow refuses a version that is already out, and nobody pushes tags by hand.
+The script refuses a version that is already out, and nobody pushes tags by hand. The release workflow (Actions > release > Run workflow on `main`) does the same on GitHub's runners, slower, and stays as the fallback.
 
 ## License
 
@@ -124,9 +125,10 @@ Os três precisam terminar limpos: o fmt não imprime nada, o clippy não mostra
 Só os mantenedores publicam releases, então o PR de quem contribui nunca sobe a `version`.
 
 1. Um PR sobe a `version` no `Cargo.toml`.
-2. Depois do merge, um mantenedor roda Actions > release > Run workflow na `main`. O workflow testa, gera os instaladores, cria a tag `vX.Y.Z` e publica a release no GitHub.
+2. Depois do merge, um mantenedor roda `scripts/release-local.sh vX.Y.Z` na `main`. O script confere o código, gera os instaladores de Windows e Linux no PC dele, manda o GitHub gerar o de macOS e coloca os sete numa release em rascunho.
+3. O mantenedor publica o rascunho, e isso cria a tag `vX.Y.Z`.
 
-O workflow recusa uma versão que já saiu, e ninguém dá push em tag à mão.
+O script recusa uma versão que já saiu, e ninguém dá push em tag à mão. O workflow release (Actions > release > Run workflow na `main`) faz o mesmo nos runners do GitHub, mais devagar, e fica como reserva.
 
 ## Licença
 
