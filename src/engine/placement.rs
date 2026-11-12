@@ -33,17 +33,25 @@ pub struct CaptureBars {
 /// actions in a row under the area (over it without room) ending at its right edge, past its left
 /// edge only when the row is wider than the area. Nothing leaves `screen` (`MARGIN` inside) or
 /// covers another part; the area is covered only when no room is left outside it.
+///
+/// `avoid` is what the bars must not cover, the selected object with its handles: a part whose
+/// place above covers it moves, and one that has no clear place stays where it was. The tools
+/// take the opposite end of their edge (the area's top or the screen's bottom), then the screen's top, then
+/// the other side, still by `avoid` alone; the options drop to `GAP` under it in their column, else rise to
+/// `GAP` over it; the actions take, after their own place, right under it or right over it (ending
+/// where it ends), then their other places, the first that is clear of it.
 pub fn capture_bars(
     area: Rect,
     tools: Vec2,
     options: Option<Vec2>,
     actions: Vec2,
     screen: Rect,
+    avoid: Option<Rect>,
 ) -> CaptureBars {
     let inside = screen.shrink(MARGIN);
     let right_room = inside.right() - area.right() - CAPTURE_GAP;
     let left_room = area.left() - CAPTURE_GAP - inside.left();
-    #[derive(PartialEq)]
+    #[derive(Clone, Copy, PartialEq)]
     enum Side {
         Right,
         Left,
@@ -60,13 +68,28 @@ pub fn capture_bars(
         (Side::Left, false)
     };
     let fit_top = |top: f32, h: f32| top.min(inside.bottom() - h).max(inside.top());
-    let tools_x = match (&side, outside) {
-        (Side::Right, true) => area.right() + CAPTURE_GAP,
-        (Side::Left, true) => area.left() - CAPTURE_GAP - tools.x,
-        (Side::Right, false) => inside.right() - tools.x,
-        (Side::Left, false) => inside.left(),
+    let tools_at = |side: Side, outside: bool, top: f32| {
+        let x = match (side, outside) {
+            (Side::Right, true) => area.right() + CAPTURE_GAP,
+            (Side::Left, true) => area.left() - CAPTURE_GAP - tools.x,
+            (Side::Right, false) => inside.right() - tools.x,
+            (Side::Left, false) => inside.left(),
+        };
+        Rect::from_min_size(pos2(x, fit_top(top, tools.y)), tools)
     };
-    let tools_r = Rect::from_min_size(pos2(tools_x, fit_top(area.top(), tools.y)), tools);
+    let clear = |r: Rect| !avoid.is_some_and(|a| a.intersects(r));
+    // Where they stand unless that covers `avoid`; else the same edge from the other end, then
+    // the other side of the screen. Only `avoid` decides, so the options never move them.
+    let other = match side {
+        Side::Right => (Side::Left, left_room >= tools.x),
+        Side::Left => (Side::Right, right_room >= tools.x),
+    };
+    let tops = [area.top(), inside.bottom() - tools.y, inside.top()];
+    let (side, outside, tools_r) = [(side, outside), other]
+        .into_iter()
+        .flat_map(|(s, o)| tops.map(|top| (s, o, tools_at(s, o, top))))
+        .find(|(_, _, r)| clear(*r))
+        .unwrap_or((side, outside, tools_at(side, outside, area.top())));
     // The options: beside the tools away from the area, else on the area's other side (either
     // may use the screen's margin to keep off the area), else beside the tools over the area.
     let options_r = options.map(|o| {
@@ -88,7 +111,22 @@ pub fn capture_bars(
             Side::Right => tools_r.left() - BAR_SPACING - o.x,
             Side::Left => tools_r.right() + BAR_SPACING,
         };
-        Rect::from_min_size(pos2(x, fit_top(area.top(), o.y)), o)
+        let r = Rect::from_min_size(pos2(x, fit_top(area.top(), o.y)), o);
+        // Over `avoid`: down under it, else up over it, in the same column (so never over the tools).
+        match avoid {
+            Some(a) if a.intersects(r) => {
+                let under = a.bottom() + GAP;
+                let over = a.top() - GAP - o.y;
+                if under + o.y <= inside.bottom() {
+                    r.translate(egui::vec2(0.0, under - r.top()))
+                } else if over >= inside.top() {
+                    r.translate(egui::vec2(0.0, over - r.top()))
+                } else {
+                    r
+                }
+            }
+            _ => r,
+        }
     });
     // The actions: under, over, or inside the area's bottom.
     let below = area.bottom() + CAPTURE_GAP;
@@ -110,28 +148,41 @@ pub fn capture_bars(
     let parts: Vec<Rect> = std::iter::once(tools_r).chain(options_r).collect();
     let column = parts.iter().fold(Rect::NOTHING, |a, r| a.union(*r));
     let free = |r: &Rect| inside.contains_rect(*r) && !parts.iter().any(|p| p.intersects(*r));
-    let actions_r = [
-        preferred,
-        preferred.translate(egui::vec2(
-            column.left() - BAR_SPACING - preferred.right(),
-            0.0,
-        )),
-        preferred.translate(egui::vec2(
-            column.right() + BAR_SPACING - preferred.left(),
-            0.0,
-        )),
-        Rect::from_min_size(
-            pos2(preferred.left(), column.top() - BAR_SPACING - actions.y),
-            actions,
-        ),
-        Rect::from_min_size(
-            pos2(preferred.left(), column.bottom() + BAR_SPACING),
-            actions,
-        ),
-    ]
-    .into_iter()
-    .find(free)
-    .unwrap_or(preferred);
+    // Next to `avoid`, where the row is wanted when its place covers it: right under it, else
+    // right over it, ending where it ends.
+    let by_avoid = avoid.into_iter().flat_map(|a| {
+        let right = a.right().min(inside.right()).max(inside.left() + actions.x);
+        [a.bottom() + GAP, a.top() - GAP - actions.y]
+            .map(|top| Rect::from_min_size(pos2(right - actions.x, top), actions))
+    });
+    let places: Vec<Rect> = std::iter::once(preferred)
+        .chain(by_avoid)
+        .chain([
+            preferred.translate(egui::vec2(
+                column.left() - BAR_SPACING - preferred.right(),
+                0.0,
+            )),
+            preferred.translate(egui::vec2(
+                column.right() + BAR_SPACING - preferred.left(),
+                0.0,
+            )),
+            Rect::from_min_size(
+                pos2(preferred.left(), column.top() - BAR_SPACING - actions.y),
+                actions,
+            ),
+            Rect::from_min_size(
+                pos2(preferred.left(), column.bottom() + BAR_SPACING),
+                actions,
+            ),
+        ])
+        .collect();
+    // The first place that is also off `avoid`; with none, the first that is free.
+    let actions_r = places
+        .iter()
+        .copied()
+        .find(|r| free(r) && clear(*r))
+        .or_else(|| places.iter().copied().find(free))
+        .unwrap_or(preferred);
     CaptureBars {
         tools: tools_r,
         options: options_r,
@@ -170,7 +221,14 @@ mod tests {
         let inside = screen.shrink(MARGIN);
         let (tools, opts, actions) = (vec2(44.0, 450.0), vec2(220.0, 260.0), vec2(380.0, 42.0));
         let place = |area: Rect, with_opts: bool| {
-            let b = capture_bars(area, tools, with_opts.then_some(opts), actions, screen);
+            let b = capture_bars(
+                area,
+                tools,
+                with_opts.then_some(opts),
+                actions,
+                screen,
+                None,
+            );
             let mut parts = vec![b.tools, b.actions];
             parts.extend(b.options);
             for (i, r) in parts.iter().enumerate() {
@@ -251,6 +309,7 @@ mod tests {
             Some(vec2(224.0, 171.0)),
             vec2(388.0, 42.0),
             screen_s,
+            None,
         );
         let o = b.options.unwrap();
         assert!(!o.intersects(area) && !b.tools.intersects(area), "{b:?}");
@@ -267,13 +326,196 @@ mod tests {
         );
     }
 
+    /// The bars of a whole-screen area on a 1920 x 1080 screen (`Ctrl+A`), with the usual sizes.
+    fn whole_screen(avoid: Option<Rect>, options: bool) -> (CaptureBars, Rect) {
+        let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(1920.0, 1080.0));
+        let b = capture_bars(
+            screen,
+            vec2(46.0, 450.0),
+            options.then_some(vec2(222.0, 240.0)),
+            vec2(388.0, 42.0),
+            screen,
+            avoid,
+        );
+        (b, screen)
+    }
+
+    /// Every part on the screen (the options may touch its edge) and none over another.
+    fn assert_apart(b: &CaptureBars, screen: Rect) {
+        let mut parts = vec![b.tools, b.actions];
+        parts.extend(b.options);
+        for (i, r) in parts.iter().enumerate() {
+            let room = if Some(*r) == b.options {
+                screen
+            } else {
+                screen.shrink(MARGIN)
+            };
+            assert!(room.contains_rect(*r), "{r:?} off the screen: {b:?}");
+            for o in &parts[i + 1..] {
+                assert!(!r.intersects(*o), "{r:?} over {o:?}: {b:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_shape_in_the_corner_of_a_whole_screen_area_is_left_clear() {
+        // A blur just drawn in the top right corner, where the tools and the options stand.
+        let shape = Rect::from_min_max(pos2(1690.0, 16.0), pos2(1910.0, 206.0));
+        let (before, screen) = whole_screen(None, true);
+        assert!(
+            before.tools.intersects(shape) && before.options.unwrap().intersects(shape),
+            "the case: both over the shape, {before:?}"
+        );
+        let (b, _) = whole_screen(Some(shape), true);
+        assert_apart(&b, screen);
+        let o = b.options.unwrap();
+        for r in [b.tools, o, b.actions] {
+            assert!(!r.intersects(shape), "{r:?} over {shape:?}");
+        }
+        // The options drop under the shape in their own column.
+        assert_eq!(o.top(), shape.bottom() + GAP);
+        assert_eq!(o.left(), before.options.unwrap().left());
+        // The tools keep their edge and size and take the opposite end of it.
+        assert_eq!(b.tools.size(), before.tools.size());
+        assert_eq!(b.tools.left(), before.tools.left());
+        assert_eq!(b.tools.bottom(), screen.shrink(MARGIN).bottom());
+    }
+
+    #[test]
+    fn only_the_part_over_the_shape_moves() {
+        // Over the options (1638..1860 wide) and not over the tools (from 1866).
+        let shape = Rect::from_min_max(pos2(1500.0, 16.0), pos2(1800.0, 206.0));
+        let (before, screen) = whole_screen(None, true);
+        let (b, _) = whole_screen(Some(shape), true);
+        assert_apart(&b, screen);
+        assert_eq!(b.tools, before.tools, "the tools were clear");
+        assert_eq!(b.options.unwrap().top(), shape.bottom() + GAP);
+        // Over the tools only.
+        let shape = Rect::from_min_max(pos2(1880.0, 16.0), pos2(1910.0, 206.0));
+        let (b, _) = whole_screen(Some(shape), true);
+        assert_apart(&b, screen);
+        assert_eq!(b.options, before.options, "the options were clear");
+        assert!(!b.tools.intersects(shape));
+    }
+
+    #[test]
+    fn the_options_rise_above_a_shape_with_no_room_under_it() {
+        let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(1920.0, 1080.0));
+        let bars = |area: Rect, shape: Rect| {
+            let b = capture_bars(
+                area,
+                vec2(46.0, 450.0),
+                Some(vec2(222.0, 240.0)),
+                vec2(388.0, 42.0),
+                screen,
+                Some(shape),
+            );
+            assert_apart(&b, screen);
+            b
+        };
+        // A shape low on the screen: the options, down there too, go over it.
+        let area = Rect::from_min_max(pos2(0.0, 800.0), pos2(1920.0, 1080.0));
+        let shape = Rect::from_min_max(pos2(1650.0, 850.0), pos2(1850.0, 1000.0));
+        let o = bars(area, shape).options.unwrap();
+        assert_eq!(o.bottom(), shape.top() - GAP);
+        assert!(!o.intersects(shape));
+        // A shape from top to bottom has no room over or under it: the options stay where they were.
+        let shape = Rect::from_min_max(pos2(1650.0, 20.0), pos2(1850.0, 1060.0));
+        let (without, _) = whole_screen(None, true);
+        assert_eq!(bars(screen, shape).options, without.options);
+    }
+
+    #[test]
+    fn the_tools_take_the_other_side_when_a_shape_fills_their_edge() {
+        let (without, screen) = whole_screen(None, true);
+        // The right edge is covered from top to bottom.
+        let shape = Rect::from_min_max(pos2(1800.0, 8.0), pos2(1912.0, 1072.0));
+        let (b, _) = whole_screen(Some(shape), true);
+        assert_apart(&b, screen);
+        assert_eq!(b.tools.size(), without.tools.size());
+        assert_eq!(b.tools.left(), screen.shrink(MARGIN).left());
+        assert!(!b.tools.intersects(shape));
+        // Nothing is clear: everything stays where it was.
+        let (b, _) = whole_screen(Some(screen), true);
+        assert_eq!(b, without);
+    }
+
+    #[test]
+    fn the_actions_sit_over_a_shape_at_the_bottom_of_the_screen() {
+        // Low in the right corner, where the actions end: right over it, ending where it does,
+        // not in the middle of the screen under the tools.
+        let shape = Rect::from_min_max(pos2(1700.0, 960.0), pos2(1910.0, 1070.0));
+        let (before, screen) = whole_screen(None, true);
+        assert!(before.actions.intersects(shape), "the case: {before:?}");
+        let (b, _) = whole_screen(Some(shape), true);
+        assert_apart(&b, screen);
+        assert_eq!(b.actions.bottom(), shape.top() - GAP, "{b:?}");
+        assert_eq!(b.actions.right(), shape.right());
+        assert_eq!(b.tools, before.tools);
+        assert_eq!(b.options, before.options);
+        // A wide shape across the bottom: the row still sits over it, at its right end.
+        let shape = Rect::from_min_max(pos2(140.0, 935.0), pos2(1650.0, 1055.0));
+        let (b, _) = whole_screen(Some(shape), true);
+        assert_apart(&b, screen);
+        assert_eq!(b.actions.bottom(), shape.top() - GAP, "{b:?}");
+        assert_eq!(b.actions.right(), shape.right());
+    }
+
+    #[test]
+    fn the_actions_sit_under_a_shape_when_there_is_room() {
+        // The area ends well above the screen's bottom: the row is under the area, and a shape
+        // that reaches into it has room under it.
+        let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(1920.0, 1080.0));
+        let area = Rect::from_min_max(pos2(0.0, 0.0), pos2(1920.0, 700.0));
+        let place = |avoid| {
+            let b = capture_bars(
+                area,
+                vec2(46.0, 450.0),
+                None,
+                vec2(388.0, 42.0),
+                screen,
+                avoid,
+            );
+            assert_apart(&b, screen);
+            b
+        };
+        let shape = Rect::from_min_max(pos2(1500.0, 690.0), pos2(1700.0, 770.0));
+        assert!(place(None).actions.intersects(shape), "the case");
+        let b = place(Some(shape));
+        assert_eq!(b.actions.top(), shape.bottom() + GAP, "{b:?}");
+        assert_eq!(b.actions.right(), shape.right());
+    }
+
+    #[test]
+    fn a_shape_inside_an_area_with_room_around_changes_nothing() {
+        let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(1600.0, 900.0));
+        let area = Rect::from_min_max(pos2(300.0, 100.0), pos2(1000.0, 650.0));
+        let place = |avoid| {
+            capture_bars(
+                area,
+                vec2(44.0, 450.0),
+                Some(vec2(220.0, 260.0)),
+                vec2(380.0, 42.0),
+                screen,
+                avoid,
+            )
+        };
+        let shape = Rect::from_min_max(pos2(700.0, 120.0), pos2(990.0, 300.0));
+        assert_eq!(place(Some(shape)), place(None));
+    }
+
     #[test]
     fn the_tools_stay_put_when_the_options_appear() {
         let (tools, opts, actions) = (vec2(44.0, 450.0), vec2(226.0, 260.0), vec2(380.0, 42.0));
         let check = |area: Rect, screen: Rect| {
-            let without = capture_bars(area, tools, None, actions, screen).tools;
-            let with = capture_bars(area, tools, Some(opts), actions, screen).tools;
-            assert_eq!(with, without, "the tools moved for {area:?} on {screen:?}");
+            // With or without a shape to keep off: the tools never answer to the options.
+            let corner =
+                Rect::from_min_size(pos2(screen.right() - 260.0, 20.0), vec2(240.0, 160.0));
+            for avoid in [None, Some(corner), Some(area.shrink(2.0))] {
+                let without = capture_bars(area, tools, None, actions, screen, avoid).tools;
+                let with = capture_bars(area, tools, Some(opts), actions, screen, avoid).tools;
+                assert_eq!(with, without, "the tools moved for {area:?} on {screen:?}");
+            }
         };
         // The case that showed it: 6 px short of room for both on the right.
         let big = Rect::from_min_size(pos2(0.0, 0.0), vec2(1600.0, 900.0));

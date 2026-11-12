@@ -172,6 +172,20 @@ impl Overlay {
             .map(|s| Rect::from_min_max(view.to_screen(s.min), view.to_screen(s.max)))
     }
 
+    /// What the capture's bars keep off, on `screen`: the selected objects' bounds and the text
+    /// being typed with its frame.
+    pub fn bars_avoid(&self, screen: Rect, shared: &Shared) -> Option<Rect> {
+        let view = Self::view_on(screen, self.img_size());
+        let selected = self
+            .an
+            .selection_bounds(&text_measure(&shared.fonts))
+            .map(|b| Rect::from_min_max(view.to_screen(b.min), view.to_screen(b.max)));
+        [selected, self.an.draft_on_screen()]
+            .into_iter()
+            .flatten()
+            .reduce(|a, b| a.union(b))
+    }
+
     fn view_on(screen: Rect, img: egui::Vec2) -> View {
         View {
             origin: screen.min,
@@ -179,7 +193,8 @@ impl Overlay {
         }
     }
 
-    /// The bars show once an area is chosen, except while it, an object or a new shape is dragged.
+    /// The bars show once an area is chosen, except while it, an object, a new shape or a text's
+    /// dashed frame is dragged.
     pub fn bars_shown(&self) -> bool {
         self.sel.is_some()
             && !matches!(self.drag, Drag::NewSel(_) | Drag::Adjust { .. })
@@ -1296,6 +1311,53 @@ mod tests {
         assert!(!o.bars_shown());
         o.drag = Drag::NewSel(pos2(10.0, 10.0));
         assert!(!o.bars_shown());
+    }
+
+    #[test]
+    fn the_bars_hide_while_the_text_frame_is_dragged_and_not_while_typing() {
+        let ctx = egui::Context::default();
+        let typing = |sh: &Shared| {
+            let mut o = capture(&ctx, sh, Tool::Text);
+            o.an.draft = Some(crate::engine::annotator::TextDraft {
+                pos: pos2(500.0, 500.0),
+                text: "Pico".into(),
+                started: 1.0,
+                caret: None,
+            });
+            o
+        };
+        let mut sh = shared();
+        let mut o = typing(&sh);
+        ui_frames(&mut o, &mut sh, vec![vec![egui::Event::Text("X".into())]]);
+        assert_eq!(o.an.draft.as_ref().map(|d| d.text.as_str()), Some("PicoX"));
+        assert!(o.bars_shown(), "typing alone leaves the bars up");
+
+        // Just left of the text: on its dashed frame, outside the letters.
+        let at = pos2(494.0, 506.0);
+        let grab = |release: bool| {
+            let mut f = vec![
+                vec![egui::Event::PointerMoved(at)],
+                vec![],
+                vec![button(at, true)],
+                vec![egui::Event::PointerMoved(at + vec2(20.0, 15.0))],
+                vec![egui::Event::PointerMoved(at + vec2(40.0, 30.0))],
+            ];
+            if release {
+                f.push(vec![button(at + vec2(40.0, 30.0), false)]);
+                f.push(vec![]);
+            }
+            f
+        };
+        let mut o = typing(&sh);
+        ui_frames(&mut o, &mut sh, grab(false));
+        let moved = o.an.draft.as_ref().expect("still typing").pos - pos2(500.0, 500.0);
+        assert!(moved.length() > 10.0, "the frame took the drag: {moved:?}");
+        assert!(!o.bars_shown(), "hidden while the frame is dragged");
+
+        let mut o = typing(&sh);
+        ui_frames(&mut o, &mut sh, grab(true));
+        assert!(o.an.draft.is_some(), "still typing after the drop");
+        assert!(o.bars_shown(), "back once the frame is let go");
     }
 
     /// Full frames of the capture (its own canvas, bars and keys) on the 1600 x 900 sample;
