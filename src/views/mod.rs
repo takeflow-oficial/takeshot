@@ -250,6 +250,18 @@ pub(crate) mod testing {
         (acts, p)
     }
 
+    /// The whole capture frame by frame, through `Overlay::ui` (canvas, text field and bars), on
+    /// the 1600 x 900 sample.
+    pub fn run_overlay(
+        ov: &mut crate::screens::overlay::Overlay,
+        shared: &mut Shared,
+        frames: Vec<Vec<Event>>,
+    ) -> Painted {
+        run_frames(shared, (1600.0, 900.0), true, frames, |ui, t, shared| {
+            ov.ui(ui, None, t, shared);
+        })
+    }
+
     /// `drive_editor`, as actions, texts and blocks.
     pub fn run_editor(
         ed: &mut crate::screens::editor::Editor,

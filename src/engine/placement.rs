@@ -38,7 +38,8 @@ pub struct CaptureBars {
 /// place above covers it moves, and one that has no clear place stays where it was. The tools
 /// take the opposite end of their edge (the area's top or the screen's bottom), then the screen's top, then
 /// the other side, still by `avoid` alone; the options drop to `GAP` under it in their column, else rise to
-/// `GAP` over it; the actions take the first of their places that is clear of it.
+/// `GAP` over it; the actions take, after their own place, right under it or right over it (ending
+/// where it ends), then their other places, the first that is clear of it.
 pub fn capture_bars(
     area: Rect,
     tools: Vec2,
@@ -147,30 +148,40 @@ pub fn capture_bars(
     let parts: Vec<Rect> = std::iter::once(tools_r).chain(options_r).collect();
     let column = parts.iter().fold(Rect::NOTHING, |a, r| a.union(*r));
     let free = |r: &Rect| inside.contains_rect(*r) && !parts.iter().any(|p| p.intersects(*r));
-    let places = [
-        preferred,
-        preferred.translate(egui::vec2(
-            column.left() - BAR_SPACING - preferred.right(),
-            0.0,
-        )),
-        preferred.translate(egui::vec2(
-            column.right() + BAR_SPACING - preferred.left(),
-            0.0,
-        )),
-        Rect::from_min_size(
-            pos2(preferred.left(), column.top() - BAR_SPACING - actions.y),
-            actions,
-        ),
-        Rect::from_min_size(
-            pos2(preferred.left(), column.bottom() + BAR_SPACING),
-            actions,
-        ),
-    ];
+    // Next to `avoid`, where the row is wanted when its place covers it: right under it, else
+    // right over it, ending where it ends.
+    let by_avoid = avoid.into_iter().flat_map(|a| {
+        let right = a.right().min(inside.right()).max(inside.left() + actions.x);
+        [a.bottom() + GAP, a.top() - GAP - actions.y]
+            .map(|top| Rect::from_min_size(pos2(right - actions.x, top), actions))
+    });
+    let places: Vec<Rect> = std::iter::once(preferred)
+        .chain(by_avoid)
+        .chain([
+            preferred.translate(egui::vec2(
+                column.left() - BAR_SPACING - preferred.right(),
+                0.0,
+            )),
+            preferred.translate(egui::vec2(
+                column.right() + BAR_SPACING - preferred.left(),
+                0.0,
+            )),
+            Rect::from_min_size(
+                pos2(preferred.left(), column.top() - BAR_SPACING - actions.y),
+                actions,
+            ),
+            Rect::from_min_size(
+                pos2(preferred.left(), column.bottom() + BAR_SPACING),
+                actions,
+            ),
+        ])
+        .collect();
     // The first place that is also off `avoid`; with none, the first that is free.
     let actions_r = places
-        .into_iter()
+        .iter()
+        .copied()
         .find(|r| free(r) && clear(*r))
-        .or_else(|| places.into_iter().find(free))
+        .or_else(|| places.iter().copied().find(free))
         .unwrap_or(preferred);
     CaptureBars {
         tools: tools_r,
@@ -430,16 +441,49 @@ mod tests {
     }
 
     #[test]
-    fn the_actions_keep_off_a_shape_too() {
-        // Low in the right corner, where the actions end.
+    fn the_actions_sit_over_a_shape_at_the_bottom_of_the_screen() {
+        // Low in the right corner, where the actions end: right over it, ending where it does,
+        // not in the middle of the screen under the tools.
         let shape = Rect::from_min_max(pos2(1700.0, 960.0), pos2(1910.0, 1070.0));
         let (before, screen) = whole_screen(None, true);
         assert!(before.actions.intersects(shape), "the case: {before:?}");
         let (b, _) = whole_screen(Some(shape), true);
         assert_apart(&b, screen);
-        assert!(!b.actions.intersects(shape), "{b:?}");
+        assert_eq!(b.actions.bottom(), shape.top() - GAP, "{b:?}");
+        assert_eq!(b.actions.right(), shape.right());
         assert_eq!(b.tools, before.tools);
         assert_eq!(b.options, before.options);
+        // A wide shape across the bottom: the row still sits over it, at its right end.
+        let shape = Rect::from_min_max(pos2(140.0, 935.0), pos2(1650.0, 1055.0));
+        let (b, _) = whole_screen(Some(shape), true);
+        assert_apart(&b, screen);
+        assert_eq!(b.actions.bottom(), shape.top() - GAP, "{b:?}");
+        assert_eq!(b.actions.right(), shape.right());
+    }
+
+    #[test]
+    fn the_actions_sit_under_a_shape_when_there_is_room() {
+        // The area ends well above the screen's bottom: the row is under the area, and a shape
+        // that reaches into it has room under it.
+        let screen = Rect::from_min_size(pos2(0.0, 0.0), vec2(1920.0, 1080.0));
+        let area = Rect::from_min_max(pos2(0.0, 0.0), pos2(1920.0, 700.0));
+        let place = |avoid| {
+            let b = capture_bars(
+                area,
+                vec2(46.0, 450.0),
+                None,
+                vec2(388.0, 42.0),
+                screen,
+                avoid,
+            );
+            assert_apart(&b, screen);
+            b
+        };
+        let shape = Rect::from_min_max(pos2(1500.0, 690.0), pos2(1700.0, 770.0));
+        assert!(place(None).actions.intersects(shape), "the case");
+        let b = place(Some(shape));
+        assert_eq!(b.actions.top(), shape.bottom() + GAP, "{b:?}");
+        assert_eq!(b.actions.right(), shape.right());
     }
 
     #[test]

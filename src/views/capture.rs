@@ -104,9 +104,10 @@ fn bars(
             .unwrap_or(default)
     };
     let bar_tool = ov.an.bar_tool();
-    // The selected object with the reach of its handles: the bars keep off it.
+    // The selected object (or the text being typed) with the reach of its handles: the bars keep
+    // off it.
     let selected = ov
-        .selection_on_screen(screen, shared)
+        .bars_avoid(screen, shared)
         .map(|r| r.expand(HANDLE_REACH));
     let at = capture_bars(
         area,
@@ -372,7 +373,7 @@ mod tests {
     use crate::screens::editor::tool_name;
     use crate::screens::overlay::{CaptureAction, Overlay};
     use crate::ui::i18n::{Lang, Msg, lang, set_lang, t as tr};
-    use crate::views::testing::{click, run_capture};
+    use crate::views::testing::{click, run_capture, run_overlay};
     use egui::{Rect, pos2};
 
     /// The 1600 x 900 sample with the area (100,100)-(900,700) and a filled rectangle in it.
@@ -612,6 +613,80 @@ mod tests {
             title.top() >= shape.bottom() && title.bottom() <= 900.0 - 8.0,
             "{title:?} under {shape:?}"
         );
+    }
+
+    #[test]
+    fn a_shape_at_the_bottom_of_a_whole_screen_capture_gets_the_actions_over_it() {
+        let shared = crate::Shared::for_tests();
+        let shape = Rect::from_min_max(pos2(120.0, 780.0), pos2(1580.0, 890.0));
+        let mut ov = Overlay::new(
+            &egui::Context::default(),
+            crate::system::capture::sample_shot(),
+            &shared,
+        )
+        .with_area(Rect::from_min_max(pos2(0.0, 0.0), pos2(1600.0, 900.0)))
+        .with_doc(Tool::Blur, Doc::new());
+        ov.an.doc.add(Ann {
+            shape: Shape::Blur(shape.min, shape.max, BlurMode::Blur),
+            color: [255, 0, 0, 255],
+            width: 4.0,
+            filled: false,
+        });
+        let mut shared = shared;
+        let (_, p) = run_capture(&mut ov, &mut shared, vec![]);
+        for (s, r) in &p.texts {
+            assert!(
+                !r.intersects(shape.expand(6.0)),
+                "{s:?} at {r:?} over the shape"
+            );
+        }
+        // The row sits right over the shape, not in the middle of the screen.
+        let copy = p
+            .texts
+            .iter()
+            .find(|(s, _)| s == tr(Msg::Copy))
+            .map(|(_, r)| *r)
+            .expect("the Copy button");
+        assert!(
+            copy.bottom() <= shape.top() && copy.top() > shape.top() - 80.0,
+            "{copy:?} over {shape:?}"
+        );
+    }
+
+    #[test]
+    fn a_text_typed_in_a_corner_of_a_whole_screen_capture_keeps_the_bars_off_it() {
+        let shared = crate::Shared::for_tests();
+        let mut shared = shared;
+        for at in [pos2(1330.0, 40.0), pos2(1330.0, 830.0)] {
+            let mut ov = Overlay::new(
+                &egui::Context::default(),
+                crate::system::capture::sample_shot(),
+                &shared,
+            )
+            .with_area(Rect::from_min_max(pos2(0.0, 0.0), pos2(1600.0, 900.0)))
+            .with_doc(Tool::Text, Doc::new());
+            ov.an.draft = Some(crate::engine::annotator::TextDraft {
+                pos: at,
+                text: "Pico".into(),
+                started: 1.0,
+                caret: None,
+            });
+            let p = run_overlay(&mut ov, &mut shared, vec![vec![]]);
+            let text = p
+                .texts
+                .iter()
+                .find(|(s, _)| s == "Pico")
+                .map(|(_, r)| *r)
+                .expect("the text being typed");
+            // Its dashed frame reaches 4 px past the letters.
+            let frame = text.expand(4.0);
+            for (s, r) in p.texts.iter().filter(|(s, _)| s != "Pico") {
+                assert!(
+                    !r.intersects(frame),
+                    "{s:?} at {r:?} over the text {frame:?}"
+                );
+            }
+        }
     }
 
     #[test]

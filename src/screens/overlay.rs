@@ -172,14 +172,18 @@ impl Overlay {
             .map(|s| Rect::from_min_max(view.to_screen(s.min), view.to_screen(s.max)))
     }
 
-    /// The selected objects' bounds on `screen`, which the capture's bars keep off.
-    pub fn selection_on_screen(&self, screen: Rect, shared: &Shared) -> Option<Rect> {
+    /// What the capture's bars keep off, on `screen`: the selected objects' bounds and the text
+    /// being typed with its frame.
+    pub fn bars_avoid(&self, screen: Rect, shared: &Shared) -> Option<Rect> {
         let view = Self::view_on(screen, self.img_size());
-        let b = self.an.selection_bounds(&text_measure(&shared.fonts))?;
-        Some(Rect::from_min_max(
-            view.to_screen(b.min),
-            view.to_screen(b.max),
-        ))
+        let selected = self
+            .an
+            .selection_bounds(&text_measure(&shared.fonts))
+            .map(|b| Rect::from_min_max(view.to_screen(b.min), view.to_screen(b.max)));
+        [selected, self.an.draft_on_screen()]
+            .into_iter()
+            .flatten()
+            .reduce(|a, b| a.union(b))
     }
 
     fn view_on(screen: Rect, img: egui::Vec2) -> View {

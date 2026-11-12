@@ -97,6 +97,8 @@ pub struct Annotator {
     pub draft: Option<TextDraft>,
     /// The text being typed is moved by its dashed frame this frame (set by `handle_typing`).
     moving_draft: bool,
+    /// The text being typed with its frame, where `handle_typing` laid them in the last frame.
+    draft_frame: Option<egui::Rect>,
     pub dragging: Option<Drag>,
     /// Revision and left-out objects of the last baked picture.
     baked: Option<(u64, Vec<ObjId>)>,
@@ -119,9 +121,16 @@ impl Annotator {
             start: None,
             draft: None,
             moving_draft: false,
+            draft_frame: None,
             dragging: None,
             baked: None,
         }
+    }
+
+    /// The text being typed with its dashed frame (and its background), on screen as of the last
+    /// frame: what the floating bars keep off while it is typed.
+    pub fn draft_on_screen(&self) -> Option<egui::Rect> {
+        self.draft.as_ref().and(self.draft_frame)
     }
 
     /// A shape is being drawn, an object dragged or a text moved by its frame: the floating bars
@@ -684,6 +693,7 @@ impl Annotator {
     ) -> bool {
         if self.draft.is_none() {
             self.moving_draft = false;
+            self.draft_frame = None;
             return false;
         }
         // Plain Enter or Esc only: egui's consume_key would also take Shift+Enter.
@@ -728,13 +738,14 @@ impl Annotator {
             .layout_no_wrap(shown.to_owned(), font.clone(), ink)
             .size();
         let text_rect = egui::Rect::from_min_size(at, ink_size);
+        let mut frame = text_rect.expand(4.0);
         if opts.text_box {
-            ui.painter().rect_filled(
-                text_rect.expand2(text_box_padding(size)),
-                size * 0.25,
-                c32(opts.color),
-            );
+            let boxed = text_rect.expand2(text_box_padding(size));
+            ui.painter()
+                .rect_filled(boxed, size * 0.25, c32(opts.color));
+            frame = frame.union(boxed);
         }
+        self.draft_frame = Some(frame);
         ui.painter().rect_stroke(
             text_rect.expand(4.0),
             3.0,
