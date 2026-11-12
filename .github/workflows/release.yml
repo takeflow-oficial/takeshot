@@ -1,7 +1,10 @@
-# One button for a release: Actions > release > Run workflow (on main), or
+# A release made on GitHub's runners: Actions > release > Run workflow (on main), or
 # `gh workflow run release`. It releases the version in Cargo.toml: lint, tests and the seven
 # installers on Windows, macOS and Linux, then the tag vX.Y.Z on this commit and the GitHub Release
 # with the installers. Bump `version` in Cargo.toml (in a pull request) before the next one.
+# The usual path is scripts/release-local.sh (Windows and Linux built on a maintainer's PC, the dmg
+# by release-macos.yml, a draft release); use one path per version. The lint and tests stay here
+# because ci.yml only runs on pull requests: nothing else checks the merge commit before it ships.
 name: release
 
 on:
