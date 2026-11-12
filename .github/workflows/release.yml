@@ -54,6 +54,9 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+      # The list release-sums.sh adds to the releases made on a maintainer's PC.
+      - name: SHA256SUMS
+        run: cd artifacts && sha256sum --text * > SHA256SUMS
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ needs.version.outputs.version }}

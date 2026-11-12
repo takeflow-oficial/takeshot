@@ -4,10 +4,11 @@
 # a draft this script creates when there is none, and it starts the release-macos workflow, which
 # builds the dmg (macOS cannot be built here) and attaches it to the same draft. Nothing is published
 # and no tag is pushed: a maintainer publishes the draft (`gh release edit vX.Y.Z --draft=false`),
-# and that creates the tag on the commit the draft points to.
+# and that creates the tag on the commit the draft points to. Before that, scripts/release-sums.sh
+# adds the SHA256SUMS of the seven files.
 #
 #   scripts/release-local.sh vX.Y.Z             check, draft release, macOS dmg, build, upload
-#   scripts/release-local.sh vX.Y.Z --dry-run   build and list what would go up; no network at all
+#   scripts/release-local.sh vX.Y.Z --dry-run   build and list what would go up; no call to GitHub
 #   scripts/release-local.sh vX.Y.Z --no-macos  do not start the release-macos workflow
 #   --skip-check (only with --dry-run)          skip scripts/check.sh, already green on this commit
 #
@@ -187,5 +188,6 @@ cat << EOF
 The draft $tag is not published and the tag does not exist yet.
 macOS: the dmg is attached by the release-macos run (gh run list --workflow release-macos.yml);
 without it, run: gh workflow run release-macos.yml -f tag=$tag
-When all seven files are there and you decide to release: gh release edit $tag --draft=false
+When all seven files are there: scripts/release-sums.sh $tag (adds the SHA256SUMS)
+Then, when you decide to release: gh release edit $tag --draft=false
 EOF

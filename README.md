@@ -110,6 +110,8 @@ Get the latest version from [Releases](https://github.com/takeflow-oficial/takes
 | macOS 11+ (Apple Silicon and Intel) | `takeshot-<version>-macos-universal.dmg` |
 | Linux x86_64 (glibc 2.39+: Ubuntu 24.04+, Debian 13+, Fedora 40+) | `takeshot-<version>-linux-x86_64.deb`, `takeshot-<version>-linux-x86_64.AppImage`, or `takeshot-<version>-linux-x86_64.tar.gz` |
 
+Each release from 0.2.1 on has a `SHA256SUMS` file with the checksum of every installer. To check a download, compare its hash with the line for that file: `sha256sum <file>` (Linux), `shasum -a 256 <file>` (macOS) or `Get-FileHash <file>` (Windows PowerShell). On Linux, `sha256sum -c --ignore-missing SHA256SUMS` checks every file next to it.
+
 The builds are not code-signed yet:
 - **Windows**: SmartScreen may say it protected your PC. Click "More info" > "Run anyway". On Windows 10 the new tray icon starts hidden under the `^` arrow: drag it to the taskbar.
 - **macOS**: the first time macOS blocks it. Open System Settings > Privacy & Security, click "Open Anyway" next to Takeshot and confirm (or run `xattr -cr /Applications/Takeshot.app`). Then allow it in Privacy & Security > Screen & System Audio Recording.
@@ -290,6 +292,8 @@ Baixe a versão mais recente em [Releases](https://github.com/takeflow-oficial/t
 | Windows 10 e 11 (x64) | `takeshot-<versão>-windows-x64-setup.exe` (recomendado: pergunta para quem instalar, só você sem administrador ou todos no computador), `takeshot-<versão>-windows-x64.msi`, ou o portátil `takeshot-<versão>-windows-x64-portable.zip` |
 | macOS 11+ (Apple Silicon e Intel) | `takeshot-<versão>-macos-universal.dmg` |
 | Linux x86_64 (glibc 2.39+: Ubuntu 24.04+, Debian 13+, Fedora 40+) | `takeshot-<versão>-linux-x86_64.deb`, `takeshot-<versão>-linux-x86_64.AppImage`, ou `takeshot-<versão>-linux-x86_64.tar.gz` |
+
+Cada release a partir da 0.2.1 tem um arquivo `SHA256SUMS` com o checksum de cada instalador. Para conferir um download, compare o hash dele com a linha daquele arquivo: `sha256sum <arquivo>` (Linux), `shasum -a 256 <arquivo>` (macOS) ou `Get-FileHash <arquivo>` (PowerShell do Windows). No Linux, `sha256sum -c --ignore-missing SHA256SUMS` confere todos os arquivos que estiverem ao lado dele.
 
 As versões ainda não são assinadas:
 - **Windows**: o SmartScreen pode dizer que protegeu o computador. Clique em "Mais informações" > "Executar assim mesmo". No Windows 10 o ícone novo começa escondido na seta `^` da bandeja: arraste-o para a barra.

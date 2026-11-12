@@ -60,7 +60,8 @@ Only maintainers release, so a contributor's pull request never bumps `version`.
 
 1. A pull request raises `version` in `Cargo.toml`.
 2. After it merges, a maintainer runs `scripts/release-local.sh vX.Y.Z` on `main`. It checks the code, builds the Windows and Linux installers on their PC, has GitHub build the macOS one, and puts all seven on a draft release.
-3. The maintainer publishes the draft, which creates the tag `vX.Y.Z`.
+3. When the macOS installer is attached, the maintainer runs `scripts/release-sums.sh vX.Y.Z`, which adds a `SHA256SUMS` file with the checksum of the seven installers.
+4. The maintainer publishes the draft, which creates the tag `vX.Y.Z`.
 
 The script refuses a version that is already out, and nobody pushes tags by hand. The release workflow (Actions > release > Run workflow on `main`) does the same on GitHub's runners, slower, and stays as the fallback.
 
@@ -126,7 +127,8 @@ Só os mantenedores publicam releases, então o PR de quem contribui nunca sobe 
 
 1. Um PR sobe a `version` no `Cargo.toml`.
 2. Depois do merge, um mantenedor roda `scripts/release-local.sh vX.Y.Z` na `main`. O script confere o código, gera os instaladores de Windows e Linux no PC dele, manda o GitHub gerar o de macOS e coloca os sete numa release em rascunho.
-3. O mantenedor publica o rascunho, e isso cria a tag `vX.Y.Z`.
+3. Com o instalador de macOS anexado, o mantenedor roda `scripts/release-sums.sh vX.Y.Z`, que acrescenta um arquivo `SHA256SUMS` com o checksum dos sete instaladores.
+4. O mantenedor publica o rascunho, e isso cria a tag `vX.Y.Z`.
 
 O script recusa uma versão que já saiu, e ninguém dá push em tag à mão. O workflow release (Actions > release > Run workflow na `main`) faz o mesmo nos runners do GitHub, mais devagar, e fica como reserva.
 
