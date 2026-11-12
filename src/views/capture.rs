@@ -29,6 +29,9 @@ fn bar_frame(t: &Tokens) -> Frame {
         })
 }
 
+/// How far an object's handles reach past its bounds, as in the editor's object bar.
+const HANDLE_REACH: f32 = 6.0;
+
 /// The bars once an area is chosen, the hint before. Returns what the user asked for.
 pub fn capture(
     ui: &mut Ui,
@@ -101,12 +104,17 @@ fn bars(
             .unwrap_or(default)
     };
     let bar_tool = ov.an.bar_tool();
+    // The selected object with the reach of its handles: the bars keep off it.
+    let selected = ov
+        .selection_on_screen(screen, shared)
+        .map(|r| r.expand(HANDLE_REACH));
     let at = capture_bars(
         area,
         size(tools_id, vec2(46.0, 450.0)),
         bar_tool.map(|_| size(opts_id, vec2(222.0, 240.0))),
         size(actions_id, vec2(380.0, 42.0)),
         screen,
+        selected,
     );
     let part = |id: egui::Id, at: Rect, margin: i8, body: &mut dyn FnMut(&mut Ui)| {
         let shown = egui::Area::new(id)
@@ -360,7 +368,7 @@ fn options_panel(
 #[cfg(test)]
 mod tests {
     use crate::engine::doc::Doc;
-    use crate::engine::model::{Ann, Shape, Tool};
+    use crate::engine::model::{Ann, BlurMode, Shape, Tool};
     use crate::screens::editor::tool_name;
     use crate::screens::overlay::{CaptureAction, Overlay};
     use crate::ui::i18n::{Lang, Msg, lang, set_lang, t as tr};
@@ -559,6 +567,50 @@ mod tests {
         assert!(
             title.right() < area.left(),
             "options left of the area: {title:?}"
+        );
+    }
+
+    /// A whole-screen capture (Ctrl+A) of the 1600 x 900 sample with a blur just drawn in the top
+    /// right corner, selected as `Doc::add` leaves it; returns the blur's rect too.
+    fn corner_blur() -> (Overlay, crate::Shared, Rect) {
+        let shape = Rect::from_min_max(pos2(1330.0, 20.0), pos2(1580.0, 140.0));
+        let shared = crate::Shared::for_tests();
+        let mut ov = Overlay::new(
+            &egui::Context::default(),
+            crate::system::capture::sample_shot(),
+            &shared,
+        )
+        .with_area(Rect::from_min_max(pos2(0.0, 0.0), pos2(1600.0, 900.0)))
+        .with_doc(Tool::Blur, Doc::new());
+        ov.an.doc.add(Ann {
+            shape: Shape::Blur(shape.min, shape.max, BlurMode::Blur),
+            color: [255, 0, 0, 255],
+            width: 4.0,
+            filled: false,
+        });
+        (ov, shared, shape)
+    }
+
+    #[test]
+    fn a_whole_screen_capture_keeps_its_bars_off_a_shape_in_the_corner() {
+        let (mut ov, mut shared, shape) = corner_blur();
+        let (_, p) = run_capture(&mut ov, &mut shared, vec![]);
+        // The shape's selection marks reach a few px past it.
+        let marked = shape.expand(6.0);
+        for (s, r) in &p.texts {
+            assert!(!r.intersects(marked), "{s:?} at {r:?} over the shape");
+        }
+        // The options keep to the screen, under the shape (the name heads the panel).
+        let title = p
+            .texts
+            .iter()
+            .filter(|(s, _)| s == tr(Msg::ToolBlur))
+            .map(|(_, r)| *r)
+            .min_by(|a, b| a.top().total_cmp(&b.top()))
+            .expect("the options panel's title");
+        assert!(
+            title.top() >= shape.bottom() && title.bottom() <= 900.0 - 8.0,
+            "{title:?} under {shape:?}"
         );
     }
 

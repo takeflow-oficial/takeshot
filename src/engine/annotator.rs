@@ -95,6 +95,8 @@ pub struct Annotator {
     pub live: Option<Ann>,
     start: Option<Pos2>,
     pub draft: Option<TextDraft>,
+    /// The text being typed is moved by its dashed frame this frame (set by `handle_typing`).
+    moving_draft: bool,
     pub dragging: Option<Drag>,
     /// Revision and left-out objects of the last baked picture.
     baked: Option<(u64, Vec<ObjId>)>,
@@ -116,13 +118,16 @@ impl Annotator {
             live: None,
             start: None,
             draft: None,
+            moving_draft: false,
             dragging: None,
             baked: None,
         }
     }
 
+    /// A shape is being drawn, an object dragged or a text moved by its frame: the floating bars
+    /// step aside until it is let go. Typing alone is not busy.
     pub fn busy(&self) -> bool {
-        self.live.is_some() || self.dragging.is_some()
+        self.live.is_some() || self.dragging.is_some() || self.moving_draft
     }
 
     pub fn next_counter(&self) -> u32 {
@@ -678,6 +683,7 @@ impl Annotator {
         hint: &str,
     ) -> bool {
         if self.draft.is_none() {
+            self.moving_draft = false;
             return false;
         }
         // Plain Enter or Esc only: egui's consume_key would also take Shift+Enter.
@@ -697,6 +703,7 @@ impl Annotator {
             })
         });
         if end {
+            self.moving_draft = false;
             if self
                 .draft
                 .as_ref()
@@ -752,6 +759,7 @@ impl Annotator {
         if grab.dragged() {
             d.pos += grab.drag_delta() / view.k;
         }
+        self.moving_draft = grab.dragged();
         if grab.hovered() || grab.dragged() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::Move);
         }
