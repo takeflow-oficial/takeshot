@@ -1,6 +1,6 @@
 [package]
 name = "takeshot"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2024"
 description = "Fast screenshot tool for Windows, macOS and Linux: capture with PrtSc, annotate with editable objects, add backgrounds and watermarks."
 license = "AGPL-3.0-or-later"
@@ -32,7 +32,8 @@ trash = "5.3.0"
 
 # Installers: `cargo build --release`, then `cargo packager --release --formats nsis,wix` (Windows),
 # `app` (macOS; CI signs it ad hoc and makes the dmg with hdiutil) or `deb,appimage` (Linux).
-# The release workflow builds and publishes them (.github/workflows/release.yml).
+# scripts/release-local.sh builds and uploads them (the dmg comes from .github/workflows/release-macos.yml);
+# .github/workflows/release.yml does the same on GitHub's runners, as the fallback.
 [package.metadata.packager]
 product-name = "Takeshot"
 identifier = "br.com.takeflow.takeshot"
