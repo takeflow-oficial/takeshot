@@ -77,11 +77,14 @@ fn in_use(e: &io::Error) -> bool {
     )
 }
 
-fn connect(name: &str) -> io::Result<Stream> {
+pub(crate) fn connect(name: &str) -> io::Result<Stream> {
     Stream::connect(socket_name(name)?)
 }
 
-fn create(name: &str, overwrite: bool) -> io::Result<interprocess::local_socket::Listener> {
+pub(crate) fn create(
+    name: &str,
+    overwrite: bool,
+) -> io::Result<interprocess::local_socket::Listener> {
     ListenerOptions::new()
         .name(socket_name(name)?)
         .try_overwrite(overwrite)

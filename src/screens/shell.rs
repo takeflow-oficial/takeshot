@@ -367,13 +367,10 @@ impl Shell {
     }
 
     /// The capture waits only for a window it just minimized: from the tray there is none.
-    fn capture_args(&self, ctx: &egui::Context, s: Shot, shared: &Shared) -> Vec<&'static str> {
-        actions::capture_args(s, self.hides_main(ctx, shared))
-    }
-
     fn capture(&self, ctx: &egui::Context, s: Shot, shared: &Shared) {
+        let wait = self.hides_main(ctx, shared);
         self.minimize_main(ctx, shared);
-        let _ = actions::spawn_self(&self.capture_args(ctx, s, shared));
+        let _ = actions::start_capture(s, wait);
     }
 
     /// Quit: the next tick asks every window of its own to close first.
@@ -740,27 +737,12 @@ mod tests {
         let ctx = egui::Context::default();
         let mut shared = Shared::for_tests();
         let hidden = Shell::new(true, false);
-        assert_eq!(
-            hidden.capture_args(&ctx, Shot::Area, &shared),
-            ["--capture"]
-        );
-        assert_eq!(
-            hidden.capture_args(&ctx, Shot::Full, &shared),
-            ["--capture", "--full"]
-        );
+        assert!(!hidden.hides_main(&ctx, &shared), "no window to wait for");
         let open = Shell::new(true, true);
-        assert_eq!(
-            open.capture_args(&ctx, Shot::Area, &shared),
-            ["--capture", "--wait"]
-        );
-        assert_eq!(
-            open.capture_args(&ctx, Shot::Full, &shared),
-            ["--capture", "--full", "--wait"]
-        );
+        assert!(open.hides_main(&ctx, &shared), "it was just minimized");
         shared.settings.hide_on_capture = false;
-        assert_eq!(
-            open.capture_args(&ctx, Shot::Area, &shared),
-            ["--capture"],
+        assert!(
+            !open.hides_main(&ctx, &shared),
             "nothing is minimized, so there is nothing to wait for"
         );
     }
@@ -784,9 +766,8 @@ mod tests {
             },
         );
         ctx.run_ui(raw, |_| {}).textures_delta.clear();
-        assert_eq!(
-            shell.capture_args(&ctx, Shot::Area, &shared),
-            ["--capture"],
+        assert!(
+            !shell.hides_main(&ctx, &shared),
             "it is already out of the picture"
         );
     }

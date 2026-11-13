@@ -4,6 +4,7 @@
 //! Modes (each runs in its own window/process):
 //!   (none)                 main window, listens for the capture keys
 //!   --capture [--full] [--delay S] [--wait] [--sample]   area capture overlay (`--wait`: 0.3 s for a window that was just minimized to leave the picture)
+//!   --capture-standby      a warm capture process the resident starts: window and GL ready off screen, it turns into the capture on request (`system::standby`)
 //!   --edit [file]          editor for a picture (a sample when no file)
 //!   --pin file             picture pinned on top of other windows
 //!   --page inicio|estilo|ajustes   main window on that page
@@ -24,7 +25,7 @@ mod views;
 
 use engine::{model, render};
 use screens::{editor, home, notice, overlay, pin, widgets};
-use system::{actions, capture, fonts, settings};
+use system::{actions, capture, fonts, settings, standby};
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -132,10 +133,14 @@ enum Mode {
     Pin(Box<pin::Pin>),
     Notice(Box<notice::Notice>),
     Gallery(Box<ui::gallery::Gallery>),
+    /// The warm capture: nothing on screen until the resident asks for a capture.
+    Standby(standby::Warm),
 }
 
 enum Launch {
     Home,
+    /// `--capture-standby`.
+    Standby,
     Capture {
         full: bool,
     },
@@ -228,6 +233,7 @@ fn parse_args() -> Args {
                 i += 1;
             }
             "--capture" => capture = true,
+            "--capture-standby" => a.launch = Launch::Standby,
             "--minimized" => a.minimized = true,
             "--native-titlebar" => ui::chrome::init(true),
             "--captures-dir" => {
@@ -360,9 +366,66 @@ struct App {
     quit_request: Arc<std::sync::Mutex<Option<std::sync::mpsc::Sender<bool>>>>,
     /// Every window agreed to the Quit: this one closes.
     quit_close: Arc<AtomicBool>,
+    /// When the warm capture was asked, until its first full-size frame is logged (`standby::mark`).
+    standby_at: Option<std::time::Instant>,
 }
 
 impl App {
+    /// The warm capture was asked to capture: this process becomes the capture window.
+    fn serve_standby(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+        let Mode::Standby(warm) = &self.mode else {
+            return;
+        };
+        let Some(incoming) = warm.take() else {
+            return;
+        };
+        self.activate(ctx, frame, incoming);
+    }
+
+    /// Does what a `--capture` process does from its start (settings, screen, overlay), then turns
+    /// the invisible window into the capture window, so no window or GL context is made now.
+    fn activate(&mut self, ctx: &egui::Context, frame: &eframe::Frame, req: standby::Incoming) {
+        let standby::Incoming { req, at, slot } = req;
+        standby::mark(at, "logic woke");
+        // The look, the language and the capture options may have changed since this process began.
+        self.shared.settings = settings::Settings::load();
+        ui::i18n::set_lang(ui::i18n::resolve(
+            self.shared.settings.lang,
+            ui::i18n::system_locale().as_deref(),
+        ));
+        self.shared.logo.sync(ctx, &self.shared.settings.watermark);
+        standby::mark(at, "settings loaded");
+        if req.delay_ms > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(req.delay_ms.into()));
+        }
+        let (shot, others) = match grab_screens(&self.shared.settings, false) {
+            Ok(s) => s,
+            Err(e) => {
+                // The `--capture` process shows the failure in its main window; let it.
+                eprintln!("takeshot: capture failed: {e}");
+                drop(slot);
+                let _ = actions::spawn_self(&["--capture"]);
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                return;
+            }
+        };
+        standby::mark(at, "screen grabbed");
+        (self.editor_window, self.notice_area) = place_for(&shot);
+        let theme = self.shared.settings.ui_theme;
+        capture_window_commands(ctx, &shot);
+        ctx.send_viewport_cmd(egui::ViewportCommand::Icon(Some(Arc::new(
+            ui::brand::window_icon(theme),
+        ))));
+        #[cfg(windows)]
+        show_in_taskbar(frame);
+        #[cfg(not(windows))]
+        let _ = frame;
+        self.mode = overlay_mode(ctx, &self.shared, shot, others, theme, Some(slot), false);
+        standby::mark(at, "overlay built, window commands sent");
+        self.standby_at = Some(at);
+        ctx.request_repaint();
+    }
+
     /// The monitor holding the capture's area; `None` outside a capture.
     fn active_shot(&self) -> Option<&capture::Shot> {
         match &self.mode {
@@ -535,18 +598,21 @@ impl App {
 }
 
 impl eframe::App for App {
-    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         // Each process follows the setting from its start; the resident also when it changes.
         // AppKit holds the policy (a no-op when it already matches), so it is also put back if
         // winit sets it again once the launch finishes.
         #[cfg(target_os = "macos")]
         system::mac_titlebar::show_in_dock(self.shared.settings.show_in_dock);
         self.pump(ctx);
+        self.serve_standby(ctx, frame);
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
-        // The resident's root is a transparent host on Windows and macOS.
-        if matches!(self.mode, Mode::Resident { .. }) && screens::shell::HOSTED {
+        // The resident's root is a transparent host on Windows and macOS, and so is the standby.
+        if matches!(self.mode, Mode::Standby(_))
+            || (matches!(self.mode, Mode::Resident { .. }) && screens::shell::HOSTED)
+        {
             [0.0; 4]
         } else {
             // eframe's default, as before the resident.
@@ -617,6 +683,7 @@ impl eframe::App for App {
                 views::begin_frame(&ctx, &t);
                 n.ui(ui, &t)
             }
+            Mode::Standby(_) => Switch::None,
             Mode::Gallery(g) => {
                 let fill = g.tokens().shell;
                 egui::CentralPanel::no_frame()
@@ -629,6 +696,12 @@ impl eframe::App for App {
                 Switch::None
             }
         };
+        if let Some(at) = self.standby_at
+            && ui.max_rect().width() > 400.0
+        {
+            standby::mark(at, "first full-size frame");
+            self.standby_at = None;
+        }
         match sw {
             Switch::ToEditor(e) => self.switch_to_editor(&ctx, e),
             Switch::ToNotice(n) => {
@@ -753,17 +826,12 @@ fn main() -> eframe::Result {
         }
         if args.sample || args.screenshot.is_some() {
             shot = Some(capture::sample_shot());
-        } else if !full && settings.capture_all_screens && !system::resident::on_wayland() {
-            match capture::grab_all() {
-                Ok(mut all) => {
-                    shot = Some(all.remove(0));
-                    other_shots = all;
-                }
-                Err(e) => capture_error = Some(e),
-            }
         } else {
-            match capture::grab() {
-                Ok(s) => shot = Some(s),
+            match grab_screens(&settings, full) {
+                Ok((s, others)) => {
+                    shot = Some(s);
+                    other_shots = others;
+                }
                 Err(e) => capture_error = Some(e),
             }
         }
@@ -861,18 +929,9 @@ fn main() -> eframe::Result {
                 .with_resizable(false)
                 .with_inner_size(notice::NOTICE_SIZE);
         }
-        _ if resident_mode => {
-            // An invisible host: tiny, transparent, click-through, off screen and off the taskbar.
-            // Its own title, so the window lookups by "Takeshot" find only the main window.
-            vp = vp
-                .with_title("Takeshot resident")
-                .with_inner_size([1.0, 1.0])
-                .with_position([-10000.0, -10000.0])
-                .with_decorations(false)
-                .with_transparent(true)
-                .with_mouse_passthrough(true)
-                .with_taskbar(false);
-        }
+        // Its own title, so the window lookups by "Takeshot" find only the main window.
+        _ if resident_mode => vp = invisible_host(vp, "Takeshot resident"),
+        (Launch::Standby, _) => vp = invisible_host(vp, "Takeshot standby"),
         _ => vp = main_window_viewport(vp),
     }
 
@@ -916,19 +975,8 @@ fn main() -> eframe::Result {
                     }
                     Some(s) => {
                         // The overlay holds the slot; the editor and the notice paths drop it here.
-                        let o = overlay::Overlay::new(ctx, s, &shared).hold(capture_slot.take());
-                        let others = std::mem::take(&mut other_shots)
-                            .into_iter()
-                            .map(|s| {
-                                let vp = capture_viewport(base_viewport(theme), &s);
-                                (vp, overlay::Overlay::new(ctx, s, &shared).beside())
-                            })
-                            .collect();
-                        Mode::Overlay {
-                            main: Box::new(if demo { o.demo() } else { o }),
-                            others,
-                            active: 0,
-                        }
+                        let others = std::mem::take(&mut other_shots);
+                        overlay_mode(ctx, &shared, s, others, theme, capture_slot.take(), demo)
                     }
                     None => {
                         shared.toast(ui::i18n::tf(
@@ -973,9 +1021,17 @@ fn main() -> eframe::Result {
                     ctx, theme, ui_mode, lang_pref,
                 ))),
                 Launch::Notice => Mode::Notice(Box::new(notice::Notice::copied())),
+                Launch::Standby => {
+                    let base = system::instance::endpoint();
+                    let wake = ctx.clone();
+                    let warm = standby::Warm::start(&base, move || wake.request_repaint())?;
+                    warm.leave_with_resident(&base);
+                    Mode::Standby(warm)
+                }
                 Launch::Home if resident_mode => {
                     let resident =
                         system::resident::Resident::start(ctx, &shared.settings, listener.take());
+                    standby::keep_warm(standby::RESPAWN_AFTER);
                     // Only Windows and macOS get here: the root is an invisible host.
                     let shell = screens::shell::Shell::new(true, !args.minimized);
                     Mode::Resident {
@@ -990,7 +1046,10 @@ fn main() -> eframe::Result {
             let quit_request = Arc::new(std::sync::Mutex::new(None));
             let quit_close = Arc::new(AtomicBool::new(false));
             if screenshot.is_none()
-                && matches!(mode, Mode::Editor(_) | Mode::Pin(_) | Mode::Overlay { .. })
+                && matches!(
+                    mode,
+                    Mode::Editor(_) | Mode::Pin(_) | Mode::Overlay { .. } | Mode::Standby(_)
+                )
             {
                 let base = system::instance::endpoint();
                 let pid = std::process::id();
@@ -1024,6 +1083,7 @@ fn main() -> eframe::Result {
                 notice_area,
                 quit_request,
                 quit_close,
+                standby_at: None,
             }))
         }),
     );
@@ -1081,6 +1141,89 @@ fn capture_viewport(vp: egui::ViewportBuilder, s: &capture::Shot) -> egui::Viewp
     }
 }
 
+/// The commands that turn the standby's window into the one `capture_viewport` builds for `s`.
+fn capture_window_commands(ctx: &egui::Context, s: &capture::Shot) {
+    use egui::ViewportCommand as C;
+    let k = s.scale;
+    ctx.send_viewport_cmd(C::Title(
+        ui::i18n::t(ui::i18n::Msg::CaptureWindowTitle).into(),
+    ));
+    ctx.send_viewport_cmd(C::MousePassthrough(false));
+    ctx.send_viewport_cmd(C::Resizable(false));
+    ctx.send_viewport_cmd(C::WindowLevel(egui::WindowLevel::AlwaysOnTop));
+    ctx.send_viewport_cmd(C::OuterPosition(egui::pos2(s.x as f32 / k, s.y as f32 / k)));
+    ctx.send_viewport_cmd(C::InnerSize(egui::vec2(
+        s.image.width() as f32 / k,
+        s.image.height() as f32 / k,
+    )));
+    if !cfg!(target_os = "macos") {
+        ctx.send_viewport_cmd(C::Fullscreen(true));
+    }
+    ctx.send_viewport_cmd(C::Focus);
+}
+
+/// The standby is made off the taskbar; the capture window, and the editor it turns into, belong on it.
+#[cfg(windows)]
+fn show_in_taskbar(frame: &eframe::Frame) {
+    use winit::platform::windows::WindowExtWindows;
+    if let Some(window) = frame.winit_window() {
+        window.set_skip_taskbar(false);
+    }
+}
+
+/// A window nobody sees: tiny, transparent, click-through, off screen and off the taskbar. The
+/// resident's root is one, and so is the capture standby until it is asked to capture.
+fn invisible_host(vp: egui::ViewportBuilder, title: &str) -> egui::ViewportBuilder {
+    vp.with_title(title)
+        .with_inner_size([1.0, 1.0])
+        .with_position([-10000.0, -10000.0])
+        .with_decorations(false)
+        .with_transparent(true)
+        .with_mouse_passthrough(true)
+        .with_taskbar(false)
+}
+
+/// Grabs the screen for a capture: the monitor under the mouse and, with "every screen" on, the
+/// others (the window per monitor is made by `Mode::Overlay`).
+fn grab_screens(
+    settings: &settings::Settings,
+    full: bool,
+) -> Result<(capture::Shot, Vec<capture::Shot>), String> {
+    if !full && settings.capture_all_screens && !system::resident::on_wayland() {
+        let mut all = capture::grab_all()?;
+        let first = all.remove(0);
+        Ok((first, all))
+    } else {
+        Ok((capture::grab()?, Vec::new()))
+    }
+}
+
+/// The capture on screen: an overlay on the monitor under the mouse, which holds the capture slot
+/// while its selection is on screen, and one per other monitor.
+fn overlay_mode(
+    ctx: &egui::Context,
+    shared: &Shared,
+    shot: capture::Shot,
+    others: Vec<capture::Shot>,
+    theme: ui::tokens::ThemeId,
+    slot: Option<system::instance::CaptureSlot>,
+    demo: bool,
+) -> Mode {
+    let o = overlay::Overlay::new(ctx, shot, shared).hold(slot);
+    let others = others
+        .into_iter()
+        .map(|s| {
+            let vp = capture_viewport(base_viewport(theme), &s);
+            (vp, overlay::Overlay::new(ctx, s, shared).beside())
+        })
+        .collect();
+    Mode::Overlay {
+        main: Box::new(if demo { o.demo() } else { o }),
+        others,
+        active: 0,
+    }
+}
+
 /// The main window: the theme's own bar, 1160 by 740.
 fn main_window_viewport(vp: egui::ViewportBuilder) -> egui::ViewportBuilder {
     ui::chrome::frameless(vp)
@@ -1135,6 +1278,7 @@ fn run_resident_windows(
         notice_area: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 900.0)),
         quit_request: Arc::new(std::sync::Mutex::new(None)),
         quit_close: Arc::new(AtomicBool::new(false)),
+        standby_at: None,
     }));
     let since = std::time::Instant::now();
     // A hidden start waits for a panel to show the tray icon: without one it is unseen for good.
@@ -1284,6 +1428,41 @@ mod tests {
                 Some(egui::vec2(1920.0, 1080.0)),
                 "scale {scale}"
             );
+        }
+    }
+
+    #[test]
+    fn the_standby_becomes_the_window_the_builder_would_make() {
+        use egui::ViewportCommand as C;
+        // Two ways to the same capture window: `capture_viewport` makes it, the commands turn an
+        // existing one into it.
+        for (scale, w, h) in [(1.0, 1920, 1080), (2.0, 3840, 2160)] {
+            let s = shot_at((-1920.0 * scale) as i32, 0, scale, w, h);
+            let built = capture_viewport(egui::ViewportBuilder::default(), &s);
+            let ctx = egui::Context::default();
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                capture_window_commands(ui.ctx(), &s)
+            });
+            out.textures_delta.clear();
+            let cmds = &out.viewport_output[&egui::ViewportId::ROOT].commands;
+            let has = |c: C| cmds.contains(&c);
+            assert!(
+                has(C::OuterPosition(built.position.unwrap())),
+                "scale {scale}"
+            );
+            assert!(
+                has(C::InnerSize(built.inner_size.unwrap())),
+                "scale {scale}"
+            );
+            assert!(has(C::WindowLevel(egui::WindowLevel::AlwaysOnTop)));
+            assert_eq!(built.window_level, Some(egui::WindowLevel::AlwaysOnTop));
+            assert_eq!(has(C::Fullscreen(true)), built.fullscreen == Some(true));
+            assert!(has(C::Resizable(false)) && built.resizable == Some(false));
+            assert!(
+                has(C::MousePassthrough(false)),
+                "the standby's window was click-through"
+            );
+            assert!(has(C::Focus));
         }
     }
 

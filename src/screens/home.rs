@@ -640,10 +640,12 @@ impl Home {
             MainAction::Page(p) => self.open(p),
             MainAction::Capture(shot) => {
                 // `step_aside` minimizes this window only when Settings say so: wait for it then.
-                let args = actions::capture_args(shot, shared.settings.hide_on_capture);
-                self.capture(ctx, shared, &args)
+                let wait = shared.settings.hide_on_capture;
+                self.capture(ctx, shared, || actions::start_capture(shot, wait))
             }
-            MainAction::CaptureIn3s => self.capture(ctx, shared, &["--capture", "--delay", "3"]),
+            MainAction::CaptureIn3s => self.capture(ctx, shared, || {
+                actions::spawn_self(&["--capture", "--delay", "3"])
+            }),
             MainAction::OpenImage => {
                 if let Some(p) = rfd::FileDialog::new()
                     .add_filter(tr(Msg::OpenImage), &["png", "jpg", "jpeg", "webp", "bmp"])
@@ -777,11 +779,16 @@ impl Home {
         }
     }
 
-    fn capture(&mut self, ctx: &egui::Context, shared: &mut Shared, args: &[&str]) {
+    fn capture(
+        &mut self,
+        ctx: &egui::Context,
+        shared: &mut Shared,
+        start: impl FnOnce() -> Result<(), String>,
+    ) {
         // The new capture shows as soon as the window is back.
         self.last_scan = f64::NEG_INFINITY;
         step_aside(ctx, shared);
-        if let Err(e) = crate::system::actions::spawn_self(args) {
+        if let Err(e) = start() {
             shared.toast(e);
         }
     }

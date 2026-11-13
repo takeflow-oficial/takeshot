@@ -188,6 +188,25 @@ pub fn capture_args(shot: Shot, wait: bool) -> Vec<&'static str> {
     args
 }
 
+/// Starts a capture of `shot` (`wait` as in `capture_args`): the warm standby takes an area capture
+/// when one answers, and a `--capture` process starts otherwise.
+pub fn start_capture(shot: Shot, wait: bool) -> Result<(), String> {
+    use crate::system::{instance, standby};
+    if standby::serves(shot, standby::enabled()) {
+        let delay_ms = if wait { standby::WAIT_MS } else { 0 };
+        match standby::ask(&instance::endpoint(), standby::Request { delay_ms }) {
+            standby::Outcome::Taken => {
+                standby::replace_used();
+                return Ok(());
+            }
+            // A capture is on screen: this PrtSc is ignored, as a second `--capture` would exit.
+            standby::Outcome::Busy => return Ok(()),
+            standby::Outcome::Absent => standby::keep_warm(standby::RESPAWN_AFTER),
+        }
+    }
+    spawn_self(&capture_args(shot, wait))
+}
+
 pub fn open_folder(path: &Path) {
     let _ = std::fs::create_dir_all(path);
     #[cfg(target_os = "windows")]

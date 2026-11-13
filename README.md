@@ -148,7 +148,7 @@ graph LR
     Main --> System
 ```
 
-One resident process per user owns the tray, the shortcuts and the main window. Captures, editors and pinned pictures run as processes of their own, register with the resident and answer its Quit. The drawing engine is shared by the capture and the editor; `views` draws every screen in both themes from the state kept in `screens`.
+One resident process per user owns the tray, the shortcuts and the main window. Captures, editors and pinned pictures run as processes of their own, register with the resident and answer its Quit. On Windows the resident keeps one capture process waiting, with its window and GL context already made, so `PrtSc` shows the capture in about 100 ms instead of 300 (`TAKESHOT_NO_STANDBY=1` turns it off; it costs about 70 MB of memory). The drawing engine is shared by the capture and the editor; `views` draws every screen in both themes from the state kept in `screens`.
 
 ## Tech stack
 
@@ -304,7 +304,7 @@ No Windows, o desinstalador do setup.exe encerra o Takeshot, remove a entrada de
 
 ## Arquitetura
 
-Um processo residente por usuário cuida da bandeja, dos atalhos e da janela principal. Capturas, editores e imagens fixadas rodam em processos próprios, se registram no residente e respondem ao Sair dele. O motor de desenho é o mesmo na captura e no editor; `views` desenha todas as telas nos dois temas a partir do estado guardado em `screens`. O diagrama está na [seção em inglês](#architecture).
+Um processo residente por usuário cuida da bandeja, dos atalhos e da janela principal. Capturas, editores e imagens fixadas rodam em processos próprios, se registram no residente e respondem ao Sair dele. No Windows o residente mantém um processo de captura em espera, com a janela e o contexto GL já criados, então o `PrtSc` mostra a captura em uns 100 ms em vez de 300 (`TAKESHOT_NO_STANDBY=1` desliga; custa uns 70 MB de memória). O motor de desenho é o mesmo na captura e no editor; `views` desenha todas as telas nos dois temas a partir do estado guardado em `screens`. O diagrama está na [seção em inglês](#architecture).
 
 ## Stack
 
