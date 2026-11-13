@@ -351,20 +351,29 @@ impl Shell {
         }
     }
 
+    /// Whether a capture takes the main window out of the picture: it is on screen (open and not
+    /// already minimized to the taskbar) and Settings do not keep Takeshot in it.
+    fn hides_main(&self, ctx: &egui::Context, shared: &Shared) -> bool {
+        let minimized =
+            ctx.input_for(self.main_viewport(), |i| i.viewport().minimized) == Some(true);
+        self.main_open && !minimized && shared.settings.hide_on_capture
+    }
+
     /// Out of the picture before a capture, unless Settings keep Takeshot in it.
     fn minimize_main(&self, ctx: &egui::Context, shared: &Shared) {
-        if self.main_open && shared.settings.hide_on_capture {
+        if self.hides_main(ctx, shared) {
             ctx.send_viewport_cmd_to(self.main_viewport(), Cmd::Minimized(true));
         }
     }
 
+    /// The capture waits only for a window it just minimized: from the tray there is none.
+    fn capture_args(&self, ctx: &egui::Context, s: Shot, shared: &Shared) -> Vec<&'static str> {
+        actions::capture_args(s, self.hides_main(ctx, shared))
+    }
+
     fn capture(&self, ctx: &egui::Context, s: Shot, shared: &Shared) {
         self.minimize_main(ctx, shared);
-        let args: &[&str] = match s {
-            Shot::Area => &["--capture", "--wait"],
-            Shot::Full => &["--capture", "--full", "--wait"],
-        };
-        let _ = actions::spawn_self(args);
+        let _ = actions::spawn_self(&self.capture_args(ctx, s, shared));
     }
 
     /// Quit: the next tick asks every window of its own to close first.
@@ -724,6 +733,62 @@ mod tests {
         shared.settings.hide_on_capture = false;
         let sent = commands(|ctx| shell.minimize_main(ctx, &shared));
         assert!(!sent.contains(&Cmd::Minimized(true)), "kept on screen");
+    }
+
+    #[test]
+    fn a_capture_from_the_tray_does_not_wait_for_a_window_that_is_not_there() {
+        let ctx = egui::Context::default();
+        let mut shared = Shared::for_tests();
+        let hidden = Shell::new(true, false);
+        assert_eq!(
+            hidden.capture_args(&ctx, Shot::Area, &shared),
+            ["--capture"]
+        );
+        assert_eq!(
+            hidden.capture_args(&ctx, Shot::Full, &shared),
+            ["--capture", "--full"]
+        );
+        let open = Shell::new(true, true);
+        assert_eq!(
+            open.capture_args(&ctx, Shot::Area, &shared),
+            ["--capture", "--wait"]
+        );
+        assert_eq!(
+            open.capture_args(&ctx, Shot::Full, &shared),
+            ["--capture", "--full", "--wait"]
+        );
+        shared.settings.hide_on_capture = false;
+        assert_eq!(
+            open.capture_args(&ctx, Shot::Area, &shared),
+            ["--capture"],
+            "nothing is minimized, so there is nothing to wait for"
+        );
+    }
+
+    #[test]
+    fn a_capture_does_not_wait_for_a_window_already_minimized_to_the_taskbar() {
+        let shell = Shell::new(true, true);
+        let shared = Shared::for_tests();
+        let ctx = egui::Context::default();
+        // One pass of the main window's own viewport, which reports it minimized.
+        let id = main_id();
+        let mut raw = egui::RawInput {
+            viewport_id: id,
+            ..Default::default()
+        };
+        raw.viewports.insert(
+            id,
+            egui::ViewportInfo {
+                minimized: Some(true),
+                ..Default::default()
+            },
+        );
+        ctx.run_ui(raw, |_| {}).textures_delta.clear();
+        assert_eq!(
+            shell.capture_args(&ctx, Shot::Area, &shared),
+            ["--capture"],
+            "it is already out of the picture"
+        );
     }
 
     #[test]

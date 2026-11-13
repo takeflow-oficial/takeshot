@@ -3,7 +3,7 @@
 //!
 //! Modes (each runs in its own window/process):
 //!   (none)                 main window, listens for the capture keys
-//!   --capture [--full] [--delay S] [--wait] [--sample]   area capture overlay
+//!   --capture [--full] [--delay S] [--wait] [--sample]   area capture overlay (`--wait`: 0.3 s for a window that was just minimized to leave the picture)
 //!   --edit [file]          editor for a picture (a sample when no file)
 //!   --pin file             picture pinned on top of other windows
 //!   --page inicio|estilo|ajustes   main window on that page

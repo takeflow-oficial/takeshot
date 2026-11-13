@@ -1,5 +1,6 @@
 //! Copy, save, open-in-a-new-window: the things every screen can do with a finished picture.
 
+use crate::system::hotkeys::Shot;
 use image::RgbaImage;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
@@ -173,6 +174,20 @@ pub fn spawn_self(args: &[&str]) -> Result<(), String> {
     cmd.spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
+/// The arguments that start a capture of `shot`. `wait` is for a window that has just been
+/// minimized and needs a moment to leave the screen before it is grabbed; with nothing to hide it
+/// only delays the capture by 0.3 s, so it is left out.
+pub fn capture_args(shot: Shot, wait: bool) -> Vec<&'static str> {
+    let mut args = vec!["--capture"];
+    if shot == Shot::Full {
+        args.push("--full");
+    }
+    if wait {
+        args.push("--wait");
+    }
+    args
+}
+
 pub fn open_folder(path: &Path) {
     let _ = std::fs::create_dir_all(path);
     #[cfg(target_os = "windows")]
@@ -187,6 +202,17 @@ pub fn open_folder(path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_capture_waits_only_when_a_window_was_just_minimized() {
+        assert_eq!(capture_args(Shot::Area, true), ["--capture", "--wait"]);
+        assert_eq!(
+            capture_args(Shot::Full, true),
+            ["--capture", "--full", "--wait"]
+        );
+        assert_eq!(capture_args(Shot::Area, false), ["--capture"]);
+        assert_eq!(capture_args(Shot::Full, false), ["--capture", "--full"]);
+    }
 
     #[test]
     fn explorer_gets_the_path_quoted_after_select() {

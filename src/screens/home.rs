@@ -638,9 +638,10 @@ impl Home {
         use crate::system::actions;
         match a {
             MainAction::Page(p) => self.open(p),
-            MainAction::Capture(Shot::Area) => self.capture(ctx, shared, &["--capture", "--wait"]),
-            MainAction::Capture(Shot::Full) => {
-                self.capture(ctx, shared, &["--capture", "--full", "--wait"])
+            MainAction::Capture(shot) => {
+                // `step_aside` minimizes this window only when Settings say so: wait for it then.
+                let args = actions::capture_args(shot, shared.settings.hide_on_capture);
+                self.capture(ctx, shared, &args)
             }
             MainAction::CaptureIn3s => self.capture(ctx, shared, &["--capture", "--delay", "3"]),
             MainAction::OpenImage => {
