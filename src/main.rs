@@ -372,19 +372,19 @@ struct App {
 
 impl App {
     /// The warm capture was asked to capture: this process becomes the capture window.
-    fn serve_standby(&mut self, ctx: &egui::Context, frame: &eframe::Frame) {
+    fn serve_standby(&mut self, ctx: &egui::Context) {
         let Mode::Standby(warm) = &self.mode else {
             return;
         };
         let Some(incoming) = warm.take() else {
             return;
         };
-        self.activate(ctx, frame, incoming);
+        self.activate(ctx, incoming);
     }
 
     /// Does what a `--capture` process does from its start (settings, screen, overlay), then turns
     /// the invisible window into the capture window, so no window or GL context is made now.
-    fn activate(&mut self, ctx: &egui::Context, frame: &eframe::Frame, req: standby::Incoming) {
+    fn activate(&mut self, ctx: &egui::Context, req: standby::Incoming) {
         let standby::Incoming { req, at, slot } = req;
         standby::mark(at, "logic woke");
         // The look, the language and the capture options may have changed since this process began.
@@ -416,10 +416,6 @@ impl App {
         ctx.send_viewport_cmd(egui::ViewportCommand::Icon(Some(Arc::new(
             ui::brand::window_icon(theme),
         ))));
-        #[cfg(windows)]
-        show_in_taskbar(frame);
-        #[cfg(not(windows))]
-        let _ = frame;
         self.mode = overlay_mode(ctx, &self.shared, shot, others, theme, Some(slot), false);
         standby::mark(at, "overlay built, window commands sent");
         self.standby_at = Some(at);
@@ -445,8 +441,17 @@ impl App {
     }
 
     /// The editor opens on the monitor where the area was chosen, not where the capture started.
-    fn switch_to_editor(&mut self, ctx: &egui::Context, e: Box<editor::Editor>) {
+    fn switch_to_editor(
+        &mut self,
+        ctx: &egui::Context,
+        frame: &eframe::Frame,
+        e: Box<editor::Editor>,
+    ) {
         use egui::ViewportCommand as C;
+        #[cfg(windows)]
+        show_in_taskbar(frame);
+        #[cfg(not(windows))]
+        let _ = frame;
         let (pos, size) = self
             .active_shot()
             .map_or(self.editor_window, |s| place_for(s).0);
@@ -598,14 +603,14 @@ impl App {
 }
 
 impl eframe::App for App {
-    fn logic(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Each process follows the setting from its start; the resident also when it changes.
         // AppKit holds the policy (a no-op when it already matches), so it is also put back if
         // winit sets it again once the launch finishes.
         #[cfg(target_os = "macos")]
         system::mac_titlebar::show_in_dock(self.shared.settings.show_in_dock);
         self.pump(ctx);
-        self.serve_standby(ctx, frame);
+        self.serve_standby(ctx);
     }
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
@@ -703,7 +708,7 @@ impl eframe::App for App {
             self.standby_at = None;
         }
         match sw {
-            Switch::ToEditor(e) => self.switch_to_editor(&ctx, e),
+            Switch::ToEditor(e) => self.switch_to_editor(&ctx, frame, e),
             Switch::ToNotice(n) => {
                 self.shared.settings.save();
                 if system::notify::native_notices() {
@@ -874,12 +879,8 @@ fn main() -> eframe::Result {
                     system::notify::wait_pending();
                     return Ok(());
                 }
-                vp = vp
-                    .with_title("Takeshot")
-                    .with_decorations(false)
+                vp = notice_viewport(vp)
                     .with_always_on_top()
-                    .with_resizable(false)
-                    .with_inner_size(notice::NOTICE_SIZE)
                     .with_position(notice::notice_pos(notice_area));
                 instant_notice = Some(notice::Notice::saved(path));
             } else if *full && settings.open_editor_after_full {
@@ -922,13 +923,7 @@ fn main() -> eframe::Result {
                 .with_title(ui::i18n::t(ui::i18n::Msg::GalleryWindowTitle))
                 .with_inner_size([1280.0, 900.0]);
         }
-        (Launch::Notice, _) => {
-            vp = vp
-                .with_title("Takeshot")
-                .with_decorations(false)
-                .with_resizable(false)
-                .with_inner_size(notice::NOTICE_SIZE);
-        }
+        (Launch::Notice, _) => vp = notice_viewport(vp),
         // Its own title, so the window lookups by "Takeshot" find only the main window.
         _ if resident_mode => vp = invisible_host(vp, "Takeshot resident"),
         (Launch::Standby, _) => vp = invisible_host(vp, "Takeshot standby"),
@@ -1133,12 +1128,22 @@ fn capture_viewport(vp: egui::ViewportBuilder, s: &capture::Shot) -> egui::Viewp
             s.image.height() as f32 / k,
         ))
         .with_always_on_top()
-        .with_resizable(false);
+        .with_resizable(false)
+        .with_taskbar(false);
     if cfg!(target_os = "macos") {
         vp
     } else {
         vp.with_fullscreen(true)
     }
+}
+
+/// The copy and save notice: a small window with no frame, off the taskbar.
+fn notice_viewport(vp: egui::ViewportBuilder) -> egui::ViewportBuilder {
+    vp.with_title("Takeshot")
+        .with_decorations(false)
+        .with_resizable(false)
+        .with_inner_size(notice::NOTICE_SIZE)
+        .with_taskbar(false)
 }
 
 /// The commands that turn the standby's window into the one `capture_viewport` builds for `s`.
@@ -1162,7 +1167,8 @@ fn capture_window_commands(ctx: &egui::Context, s: &capture::Shot) {
     ctx.send_viewport_cmd(C::Focus);
 }
 
-/// The standby is made off the taskbar; the capture window, and the editor it turns into, belong on it.
+/// The standby and the capture window are made off the taskbar (a button while the screen is being
+/// picked is what other screenshot tools do not show); the editor the capture turns into belongs on it.
 #[cfg(windows)]
 fn show_in_taskbar(frame: &eframe::Frame) {
     use winit::platform::windows::WindowExtWindows;
@@ -1181,6 +1187,9 @@ fn invisible_host(vp: egui::ViewportBuilder, title: &str) -> egui::ViewportBuild
         .with_transparent(true)
         .with_mouse_passthrough(true)
         .with_taskbar(false)
+        // The next standby starts while a capture is on screen; shown active, its window would take
+        // the keyboard from the capture.
+        .with_active(false)
 }
 
 /// Grabs the screen for a capture: the monitor under the mouse and, with "every screen" on, the
@@ -1414,6 +1423,25 @@ mod tests {
             y,
             scale,
         }
+    }
+
+    #[test]
+    fn the_capture_and_its_notice_stay_off_the_taskbar() {
+        // Other screenshot tools show no taskbar button while the screen is being picked; only the
+        // editor the capture turns into belongs there.
+        let shot = shot_at(0, 0, 1.0, 1920, 1080);
+        let capture = capture_viewport(egui::ViewportBuilder::default(), &shot);
+        assert_eq!(capture.taskbar, Some(false), "the capture window");
+        let notice = notice_viewport(egui::ViewportBuilder::default());
+        assert_eq!(notice.taskbar, Some(false), "the copy and save notice");
+    }
+
+    #[test]
+    fn an_invisible_host_does_not_take_the_focus() {
+        // The next capture standby boots a moment after a capture opened; its host window must not
+        // pull the keyboard (Esc, Enter, Ctrl+A) away from the capture on screen.
+        let host = invisible_host(egui::ViewportBuilder::default(), "Takeshot standby");
+        assert_eq!(host.active, Some(false));
     }
 
     #[test]
