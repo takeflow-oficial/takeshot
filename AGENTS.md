@@ -86,7 +86,7 @@ Each kind of process (the resident, `--capture-standby`, `--capture`, `--edit`, 
 
 - Say what a bug report would need with `log::line(format_args!(...))` (stderr and the file), never `eprintln!`. A run starts with a line of version, system and flags and ends with `exit`; no `exit` after a `start` means the process was killed or crashed.
 - Nothing the user captured or typed, and no file path, goes in: the log is attached to bug reports. A panic is logged without its message, and the start line lists the flags without their values.
-- A file of 256 KB or more becomes `.previous.log` when the next run of its role starts, and one run stops writing at 1 MB. `log_role` (`main.rs`) gives no log to the runs that only render a picture (`--screenshot`, `--sample`) and to the dev pages, and `log::init` comes after the single-instance claim, so a second launch never touches the resident's file. `TAKESHOT_STANDBY_LOG` is a different file: the warm capture's timings.
+- A file of 256 KB or more becomes `.previous.log` when the next run of its role starts, and one run stops writing at 1 MB (a panic still gets its line, within 16 KB more). `log_role` (`main.rs`) gives no log to the runs that only render a picture (`--screenshot`, `--sample`), to the editor with no picture (`--page editor`) and to the dev pages, and `log::init` comes after the single-instance claim, so a second launch never touches the resident's file. On Windows the warm capture is one process from `--capture-standby` to the editor, so its whole life is in `takeshot-standby.log`; `takeshot-capture.log` and `takeshot-edit.log` belong to the processes started the cold way. `TAKESHOT_STANDBY_LOG` is a different file: the warm capture's timings.
 
 ## Verify before calling work done
 

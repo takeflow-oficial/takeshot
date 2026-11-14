@@ -5,12 +5,13 @@
 //! `ROTATE_AT` becomes `takeshot-<role>.previous.log`, so a role keeps about two files' worth. Lines
 //! carry the process id, because several editors can append to the same file. Nothing the user
 //! captured or typed goes in: a panic is logged by thread and source line, never by its message,
-//! and the start line lists only the command line's flags, never a file path.
+//! and the start line lists only the command line's flags, never a file path. A run stops writing
+//! at `RUN_BUDGET`, except for a panic, which still gets in within `URGENT_RESERVE` more bytes.
 
 use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io::{self, Write};
-use std::panic::Location;
+use std::panic::{Location, PanicHookInfo};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
@@ -19,6 +20,9 @@ pub const ROTATE_AT: u64 = 256 * 1024;
 
 /// What one run writes before it stops: a loop of errors must not fill the disk.
 pub const RUN_BUDGET: u64 = 1024 * 1024;
+
+/// What a run may still write past its budget, for the lines that must not be lost (panics).
+pub const URGENT_RESERVE: u64 = 16 * 1024;
 
 /// One process's open log file.
 pub struct Sink {
@@ -71,21 +75,34 @@ impl Sink {
     /// Appends one line: time, process id and `args`. Past the run's budget it says so once and
     /// then stays quiet.
     pub fn write(&self, args: fmt::Arguments) {
+        self.append(args, false);
+    }
+
+    /// Like `write`, for the line that must not be lost (a panic): it still goes in after the
+    /// budget is spent, within `URGENT_RESERVE` more bytes.
+    pub fn write_urgent(&self, args: fmt::Arguments) {
+        self.append(args, true);
+    }
+
+    fn append(&self, args: fmt::Arguments, urgent: bool) {
         let at = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
         let line = format!("{at} [{}] {args}\n", self.pid);
         // A panic on another thread poisons the lock; the log is the last thing that should stop.
         let mut state = self.state.lock().unwrap_or_else(PoisonError::into_inner);
-        if state.full {
+        if state.full && !urgent {
             return;
         }
-        let text = if state.written + line.len() as u64 > state.budget {
+        let limit = state.budget + if urgent { URGENT_RESERVE } else { 0 };
+        let text = if state.written + line.len() as u64 <= limit {
+            line
+        } else if urgent {
+            return;
+        } else {
             state.full = true;
             format!(
                 "{at} [{}] log full, no more lines from this run\n",
                 self.pid
             )
-        } else {
-            line
         };
         if state.file.write_all(text.as_bytes()).is_ok() {
             state.written += text.len() as u64;
@@ -108,17 +125,23 @@ pub fn panic_text(thread: Option<&str>, at: Option<&Location<'_>>) -> String {
     }
 }
 
-/// Makes every panic of the process a line in `sink`, then lets the previous hook run.
-pub fn install_panic_hook(sink: Arc<Sink>) {
-    let previous = std::panic::take_hook();
-    std::panic::set_hook(Box::new(move |info| {
+type Hook = Box<dyn Fn(&PanicHookInfo<'_>) + Sync + Send + 'static>;
+
+/// A panic hook that writes the panic as a line in `sink` and then runs `previous`.
+fn hook_over(sink: Arc<Sink>, previous: Hook) -> Hook {
+    Box::new(move |info| {
         let thread = std::thread::current();
-        sink.write(format_args!(
+        sink.write_urgent(format_args!(
             "{}",
             panic_text(thread.name(), info.location())
         ));
         previous(info);
-    }));
+    })
+}
+
+/// Makes every panic of the process a line in `sink`, then lets the previous hook run.
+pub fn install_panic_hook(sink: Arc<Sink>) {
+    std::panic::set_hook(hook_over(sink, std::panic::take_hook()));
 }
 
 static SINK: OnceLock<Arc<Sink>> = OnceLock::new();
@@ -137,12 +160,15 @@ pub fn dir() -> Option<PathBuf> {
     dirs::home_dir().map(|h| h.join("Library").join("Logs").join("takeshot"))
 }
 
-/// The flags of a command line (`--capture`, `--full`) without their values, which are file names:
-/// what the log may say about how a process was started.
+/// The flags of a command line (`--capture`, `--full`) without their values, which are file names
+/// (`--flag=value` is cut at the `=`): what the log may say about how a process was started.
 pub fn flags<S: AsRef<str>>(args: impl IntoIterator<Item = S>) -> String {
     args.into_iter()
-        .map(|a| a.as_ref().to_owned())
-        .filter(|a| a.starts_with("--"))
+        .filter_map(|a| {
+            let a = a.as_ref();
+            a.starts_with("--")
+                .then(|| a.split('=').next().unwrap_or(a).to_owned())
+        })
         .collect::<Vec<_>>()
         .join(" ")
 }
@@ -162,8 +188,12 @@ pub fn init(role: &str, flags: &str) {
 
 /// Says `args` on stderr and in the log file, when this process has one.
 pub fn line(args: fmt::Arguments) {
+    line_in(SINK.get().map(Arc::as_ref), args);
+}
+
+fn line_in(sink: Option<&Sink>, args: fmt::Arguments) {
     eprintln!("takeshot: {args}");
-    if let Some(sink) = SINK.get() {
+    if let Some(sink) = sink {
         sink.write(args);
     }
 }
@@ -171,13 +201,17 @@ pub fn line(args: fmt::Arguments) {
 /// Ends the log of a run with the way the process left: a clean exit in the file only (it is no
 /// news on stderr), an error on both.
 pub fn finish<E: fmt::Display>(res: &Result<(), E>) {
+    finish_in(SINK.get().map(Arc::as_ref), res);
+}
+
+fn finish_in<E: fmt::Display>(sink: Option<&Sink>, res: &Result<(), E>) {
     match res {
         Ok(()) => {
-            if let Some(sink) = SINK.get() {
+            if let Some(sink) = sink {
                 sink.write(format_args!("exit"));
             }
         }
-        Err(e) => line(format_args!("exit with an error: {e}")),
+        Err(e) => line_in(sink, format_args!("exit with an error: {e}")),
     }
 }
 
@@ -285,25 +319,51 @@ mod tests {
             sink.write(format_args!("line {i} of a loop that never ends"));
         }
         let log = read(&dir, "takeshot-pin.log");
-        assert!(log.len() < 400 + 120, "{} bytes", log.len());
+        let lines: Vec<&str> = log.lines().collect();
+        let (note, body) = lines.split_last().expect("lines");
+        assert!(
+            note.ends_with("log full, no more lines from this run"),
+            "{log}"
+        );
         assert_eq!(log.matches("log full").count(), 1, "{log}");
+        // The start line and the lines before the note fit the budget, and the budget was used.
+        let body_len: usize = body.iter().map(|l| l.len() + 1).sum();
+        // What is left is less than one more line (about 65 bytes, a longer pid adds a few).
+        assert!(
+            (400 - 80..=400).contains(&body_len),
+            "{body_len} bytes in {log}"
+        );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The panic hook is one per process: the tests that replace it take turns.
+    static HOOK: Mutex<()> = Mutex::new(());
+
+    /// Panics on a thread named `thread` with `install` having put the hook in place, then puts the
+    /// harness's own hook back.
+    fn panic_under(install: impl FnOnce(), thread: &str, message: &'static str) {
+        let _turn = HOOK.lock().unwrap_or_else(PoisonError::into_inner);
+        let original = std::panic::take_hook();
+        install();
+        let joined = std::thread::Builder::new()
+            .name(thread.into())
+            .spawn(move || panic!("{message}"))
+            .unwrap()
+            .join();
+        drop(std::panic::take_hook());
+        std::panic::set_hook(original);
+        assert!(joined.is_err());
     }
 
     #[test]
     fn a_panic_leaves_the_thread_and_the_line_but_not_the_message() {
         let dir = scratch("panic");
         let sink = Arc::new(Sink::open_in(&dir, "edit", RUN_BUDGET, "").unwrap());
-        let original = std::panic::take_hook();
-        install_panic_hook(sink);
-        let joined = std::thread::Builder::new()
-            .name("worker".into())
-            .spawn(|| panic!("secret C:\\Users\\someone\\picture.png"))
-            .unwrap()
-            .join();
-        drop(std::panic::take_hook());
-        std::panic::set_hook(original);
-        assert!(joined.is_err());
+        panic_under(
+            || install_panic_hook(sink),
+            "worker",
+            "secret C:\\Users\\someone\\picture.png",
+        );
         let log = read(&dir, "takeshot-edit.log");
         let line = log
             .lines()
@@ -311,6 +371,85 @@ mod tests {
             .unwrap_or_else(|| panic!("no panic line in {log}"));
         assert!(line.contains("log.rs:"), "{line}");
         assert!(!log.contains("secret") && !log.contains("someone"), "{log}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_panic_is_logged_even_after_the_run_spent_its_budget() {
+        let dir = scratch("urgent");
+        let sink = Arc::new(Sink::open_in(&dir, "resident", 300, "").unwrap());
+        for i in 0..100 {
+            sink.write(format_args!("an error of a loop, number {i}"));
+        }
+        assert!(read(&dir, "takeshot-resident.log").contains("log full"));
+        panic_under(|| install_panic_hook(sink), "late", "after the budget");
+        let log = read(&dir, "takeshot-resident.log");
+        assert!(log.contains("panic in thread 'late'"), "{log}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn what_a_run_may_write_past_its_budget_has_a_limit() {
+        let dir = scratch("reserve");
+        let sink = Sink::open_in(&dir, "pin", 200, "").unwrap();
+        for _ in 0..2000 {
+            sink.write_urgent(format_args!("panic in thread 'again' at src/x.rs:1:1"));
+        }
+        let len = read(&dir, "takeshot-pin.log").len() as u64;
+        assert!(len > 200 && len <= 200 + URGENT_RESERVE, "{len} bytes");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_panic_hook_hands_over_to_the_one_before_it() {
+        let dir = scratch("chain");
+        let sink = Arc::new(Sink::open_in(&dir, "edit", RUN_BUDGET, "").unwrap());
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = calls.clone();
+        let previous: Hook = Box::new(move |_| {
+            seen.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        });
+        panic_under(
+            || std::panic::set_hook(hook_over(sink, previous)),
+            "chained",
+            "once",
+        );
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let log = read(&dir, "takeshot-edit.log");
+        assert!(log.contains("panic in thread 'chained'"), "{log}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_line_and_the_exit_reach_the_file() {
+        let dir = scratch("glue");
+        let sink = Sink::open_in(&dir, "capture", RUN_BUDGET, "--capture").unwrap();
+        line_in(Some(&sink), format_args!("no tray icon: {}", "boom"));
+        finish_in(Some(&sink), &Ok::<(), String>(()));
+        let log = read(&dir, "takeshot-capture.log");
+        let lines: Vec<&str> = log.lines().collect();
+        assert_eq!(lines.len(), 3, "{log}");
+        assert!(lines[1].ends_with("] no tray icon: boom"), "{log}");
+        assert!(lines[2].ends_with("] exit"), "{log}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_exit_with_an_error_says_why_and_a_run_with_no_file_still_works() {
+        let dir = scratch("glue-error");
+        let sink = Sink::open_in(&dir, "edit", RUN_BUDGET, "").unwrap();
+        finish_in(Some(&sink), &Err::<(), _>("no OpenGL"));
+        let log = read(&dir, "takeshot-edit.log");
+        assert!(
+            log.lines()
+                .last()
+                .is_some_and(|l| l.ends_with("] exit with an error: no OpenGL")),
+            "{log}"
+        );
+        // A throwaway run has no sink: lines go to stderr only, and nothing panics.
+        line_in(None, format_args!("only on stderr"));
+        finish_in(None, &Err::<(), _>("no OpenGL"));
+        finish_in(None, &Ok::<(), String>(()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -338,6 +477,13 @@ mod tests {
         assert_eq!(flags(args), "--edit --theme --full");
         assert_eq!(flags(args.map(String::from)), "--edit --theme --full");
         assert_eq!(flags(Vec::<String>::new()), "");
+        // A value glued with `=` is a value too.
+        let glued = [
+            "--captures-dir=C:\\Users\\someone\\x",
+            "--lang=pt",
+            "--full",
+        ];
+        assert_eq!(flags(glued), "--captures-dir --lang --full");
     }
 
     #[test]

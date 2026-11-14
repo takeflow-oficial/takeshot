@@ -790,9 +790,10 @@ fn log_role(launch: &Launch, resident_mode: bool, throwaway: bool) -> Option<&'s
         Launch::Home if resident_mode => Some("resident"),
         Launch::Standby => Some("standby"),
         Launch::Capture { .. } => Some("capture"),
-        Launch::Edit(_) => Some("edit"),
+        Launch::Edit(Some(_)) => Some("edit"),
         Launch::Pin(_) => Some("pin"),
-        Launch::Home | Launch::Gallery | Launch::Notice => None,
+        // `--edit` with no picture is the editor on its sample (`--page editor`): a dev page.
+        Launch::Edit(None) | Launch::Home | Launch::Gallery | Launch::Notice => None,
     }
 }
 
@@ -1457,7 +1458,8 @@ mod tests {
             role(Launch::Capture { full: true }, false, false),
             Some("capture")
         );
-        assert_eq!(role(Launch::Edit(None), false, false), Some("edit"));
+        let picture = Launch::Edit(Some(PathBuf::from("capture.png")));
+        assert_eq!(role(picture, false, false), Some("edit"));
         assert_eq!(
             role(Launch::Pin(PathBuf::from("p.png")), false, false),
             Some("pin")
@@ -1466,8 +1468,10 @@ mod tests {
         assert_eq!(role(Launch::Home, false, false), None);
         assert_eq!(role(Launch::Gallery, false, false), None);
         assert_eq!(role(Launch::Notice, false, false), None);
+        assert_eq!(role(Launch::Edit(None), false, false), None);
         // `--screenshot` and `--sample` runs render a picture and leave.
-        assert_eq!(role(Launch::Edit(None), false, true), None);
+        let picture = Launch::Edit(Some(PathBuf::from("capture.png")));
+        assert_eq!(role(picture, false, true), None);
         assert_eq!(role(Launch::Capture { full: false }, false, true), None);
     }
 
