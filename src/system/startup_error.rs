@@ -34,14 +34,41 @@ pub struct Notice {
     pub body: String,
 }
 
-/// The first line of `reason`, cut to `REASON_MAX` characters.
+/// `line` without the " at <file>.rs:<line>" that winit and others put in their errors: the path is
+/// the build machine's and the number means nothing to the user.
+fn without_location(line: &str) -> String {
+    let mut out = String::with_capacity(line.len());
+    let mut rest = line;
+    while let Some(i) = rest.find(" at ") {
+        let after = &rest[i + 4..];
+        let token = after
+            .find(char::is_whitespace)
+            .map_or(after, |n| &after[..n]);
+        let place = token.trim_end_matches(':');
+        let is_location = place.rfind(".rs:").is_some_and(|p| {
+            let n = &place[p + 4..];
+            !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit())
+        });
+        out.push_str(&rest[..i]);
+        if is_location {
+            rest = &rest[i + 4 + place.len()..];
+        } else {
+            out.push_str(" at ");
+            rest = after;
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The first line of `reason` without its source location, cut to `REASON_MAX` characters.
 fn short(reason: &str) -> String {
-    let line = reason.lines().next().unwrap_or_default();
+    let line = without_location(reason.lines().next().unwrap_or_default());
     if line.chars().count() > REASON_MAX {
         let cut: String = line.chars().take(REASON_MAX).collect();
         format!("{cut}...")
     } else {
-        line.to_owned()
+        line
     }
 }
 
@@ -145,6 +172,25 @@ mod tests {
         assert!(cut.ends_with("..."));
         let n = notice(Cause::Other, &reason, None);
         assert!(!n.body.contains("xxx"), "{}", n.body);
+    }
+
+    #[test]
+    fn a_source_location_is_left_out_of_the_reason() {
+        // What winit says with no display (seen in a clean Ubuntu container): the path is the
+        // build machine's and the line number means nothing to the user.
+        let raw = "winit EventLoopError: os error at /usr/local/cargo/registry/src/index.crates.io-1/winit-0.30.13/src/platform_impl/linux/mod.rs:765: neither WAYLAND_DISPLAY nor WAYLAND_SOCKET nor DISPLAY is set.";
+        assert_eq!(
+            short(raw),
+            "winit EventLoopError: os error: neither WAYLAND_DISPLAY nor WAYLAND_SOCKET nor DISPLAY is set."
+        );
+        // Only a source location goes: other " at " text stays.
+        assert_eq!(short("stopped at the door"), "stopped at the door");
+        assert_eq!(
+            short("failed at file.rs: no number"),
+            "failed at file.rs: no number"
+        );
+        let n = notice(Cause::Other, raw, None);
+        assert!(!n.body.contains("registry"), "{}", n.body);
     }
 
     #[test]
