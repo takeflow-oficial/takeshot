@@ -4,6 +4,7 @@
 //! socket of their own, so the tray's Quit can ask each whether it may close (an editor with
 //! changes asks its user first) and then tell all to close, or to stay after a Cancel.
 
+use super::log;
 #[cfg(target_os = "macos")]
 use interprocess::local_socket::GenericFilePath;
 #[cfg(not(target_os = "macos"))]
@@ -128,7 +129,7 @@ pub fn claim(name: &str) -> Claim {
 }
 
 fn alone(e: io::Error) -> Claim {
-    eprintln!("takeshot: running without single instance: {e}");
+    log::line(format_args!("running without single instance: {e}"));
     Claim::Alone
 }
 
@@ -148,7 +149,7 @@ pub fn capture_slot(name: &str) -> Option<CaptureSlot> {
     {
         Ok(f) => f,
         Err(e) => {
-            eprintln!("takeshot: captures not guarded ({}): {e}", path.display());
+            log::line(format_args!("captures not guarded: {e}"));
             return Some(CaptureSlot(None));
         }
     };
@@ -156,7 +157,7 @@ pub fn capture_slot(name: &str) -> Option<CaptureSlot> {
         Ok(()) => Some(CaptureSlot(Some(file))),
         Err(std::fs::TryLockError::WouldBlock) => None,
         Err(std::fs::TryLockError::Error(e)) => {
-            eprintln!("takeshot: captures not guarded ({}): {e}", path.display());
+            log::line(format_args!("captures not guarded: {e}"));
             Some(CaptureSlot(None))
         }
     }
@@ -449,7 +450,7 @@ impl Listener {
                 }
             });
         if let Err(e) = spawned {
-            eprintln!("takeshot: cannot answer second launches: {e}");
+            log::line(format_args!("cannot answer second launches: {e}"));
         }
     }
 }

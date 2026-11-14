@@ -91,7 +91,7 @@ fn deliver(spec: &Spec) {
                 });
             }
         }
-        Err(e) => eprintln!("takeshot: no notification: {e}"),
+        Err(e) => crate::system::log::line(format_args!("no notification: {e}")),
     }
 }
 

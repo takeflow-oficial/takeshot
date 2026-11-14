@@ -2,6 +2,7 @@
 
 use crate::system::hotkeys::{Hotkeys, Shot};
 use crate::system::instance::{Listener, Page};
+use crate::system::log;
 use crate::system::settings::{OnClose, Settings, TrayClick};
 use crate::system::tray::{Tray, TrayEvent};
 use std::sync::mpsc;
@@ -149,7 +150,7 @@ impl Resident {
         let tray = match Tray::start(settings.ui_theme, move |e| s.send(ResidentEvent::Tray(e))) {
             Ok(t) => Some(t),
             Err(e) => {
-                eprintln!("takeshot: no tray icon: {e}");
+                log::line(format_args!("no tray icon: {e}"));
                 None
             }
         };
@@ -197,7 +198,7 @@ impl Resident {
                 }) {
                     Ok(h) => Some(h),
                     Err(e) => {
-                        eprintln!("takeshot: PrtSc priority unavailable: {e}");
+                        log::line(format_args!("PrtSc priority unavailable: {e}"));
                         None
                     }
                 };

@@ -364,13 +364,13 @@ mod gtk_thread {
             .name("takeshot-tray".into())
             .spawn(move || {
                 if let Err(e) = gtk::init() {
-                    eprintln!("takeshot: no tray, GTK did not start: {e}");
+                    crate::system::log::line(format_args!("no tray, GTK did not start: {e}"));
                     return;
                 }
                 let icon = match tray_icon_image(theme) {
                     Ok(i) => i,
                     Err(e) => {
-                        eprintln!("takeshot: no tray icon: {e}");
+                        crate::system::log::line(format_args!("no tray icon: {e}"));
                         return;
                     }
                 };
@@ -382,7 +382,7 @@ mod gtk_thread {
                 {
                     Ok(tray) => TRAY.with(|t| *t.borrow_mut() = Some(tray)),
                     Err(e) => {
-                        eprintln!("takeshot: no tray: {e}");
+                        crate::system::log::line(format_args!("no tray: {e}"));
                         return;
                     }
                 }

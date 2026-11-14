@@ -25,7 +25,7 @@ mod views;
 
 use engine::{model, render};
 use screens::{editor, home, notice, overlay, pin, widgets};
-use system::{actions, capture, fonts, settings, standby};
+use system::{actions, capture, fonts, log, settings, standby};
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -348,7 +348,9 @@ fn main_home(
 
 /// Reports a flag value the app does not know, so a typo never yields a silent fallback.
 fn unknown_value<T>(flag: &str, value: Option<&str>) -> Option<T> {
-    eprintln!("takeshot: unknown value {value:?} for {flag}; using the saved setting");
+    log::line(format_args!(
+        "unknown value {value:?} for {flag}; using the saved setting"
+    ));
     None
 }
 
@@ -402,7 +404,7 @@ impl App {
             Ok(s) => s,
             Err(e) => {
                 // The `--capture` process shows the failure in its main window; let it.
-                eprintln!("takeshot: capture failed: {e}");
+                log::line(format_args!("capture failed: {e}"));
                 drop(slot);
                 let _ = actions::spawn_self(&["--capture"]);
                 ctx.send_viewport_cmd(egui::ViewportCommand::Close);
@@ -762,7 +764,7 @@ impl eframe::App for App {
                     if let Some(rgba) = image::RgbaImage::from_raw(w as u32, h as u32, bytes)
                         && let Err(e) = actions::save_png(&rgba, &path)
                     {
-                        eprintln!("screenshot failed: {e}");
+                        log::line(format_args!("screenshot failed: {e}"));
                     }
                     done.store(true, Ordering::SeqCst);
                 });
@@ -778,7 +780,30 @@ impl eframe::App for App {
     }
 }
 
+/// The kind of process this is, as its log file names it; none for the runs that only render a
+/// picture (`--screenshot`, the sample pages), which keep off the user's log folder.
+fn log_role(launch: &Launch, resident_mode: bool, throwaway: bool) -> Option<&'static str> {
+    if throwaway {
+        return None;
+    }
+    match launch {
+        Launch::Home if resident_mode => Some("resident"),
+        Launch::Standby => Some("standby"),
+        Launch::Capture { .. } => Some("capture"),
+        Launch::Edit(Some(_)) => Some("edit"),
+        Launch::Pin(_) => Some("pin"),
+        // `--edit` with no picture is the editor on its sample (`--page editor`): a dev page.
+        Launch::Edit(None) | Launch::Home | Launch::Gallery | Launch::Notice => None,
+    }
+}
+
 fn main() -> eframe::Result {
+    let res = run();
+    log::finish(&res);
+    res
+}
+
+fn run() -> eframe::Result {
     ui::chrome::init(false);
     let args = parse_args();
     let settings = settings::Settings::load();
@@ -803,6 +828,12 @@ fn main() -> eframe::Result {
             system::instance::Claim::Primary(l) => listener = Some(l),
             system::instance::Claim::Alone => {}
         }
+    }
+
+    // Only now: a second launch leaves above without touching the running resident's log.
+    let throwaway = args.screenshot.is_some() || args.sample;
+    if let Some(role) = log_role(&args.launch, resident_mode, throwaway) {
+        log::init(role, &log::flags(std::env::args().skip(1)));
     }
 
     // Linux: the main window comes and goes, so the resident runs its windows one at a time.
@@ -867,7 +898,7 @@ fn main() -> eframe::Result {
                 );
                 let path = actions::auto_path(&settings.save_dir);
                 if let Err(e) = actions::save_png(&img, &path) {
-                    eprintln!("save failed: {e}");
+                    log::line(format_args!("save failed: {e}"));
                     return Ok(());
                 }
                 if !settings.show_bubbles {
@@ -1414,6 +1445,34 @@ mod tests {
             toast: None,
             overrides: RunOverrides::default(),
         }
+    }
+
+    #[test]
+    fn every_kind_of_process_has_its_own_log_and_the_throwaway_runs_have_none() {
+        let role = |launch: Launch, resident: bool, throwaway: bool| {
+            log_role(&launch, resident, throwaway)
+        };
+        assert_eq!(role(Launch::Home, true, false), Some("resident"));
+        assert_eq!(role(Launch::Standby, false, false), Some("standby"));
+        assert_eq!(
+            role(Launch::Capture { full: true }, false, false),
+            Some("capture")
+        );
+        let picture = Launch::Edit(Some(PathBuf::from("capture.png")));
+        assert_eq!(role(picture, false, false), Some("edit"));
+        assert_eq!(
+            role(Launch::Pin(PathBuf::from("p.png")), false, false),
+            Some("pin")
+        );
+        // The main window of a run that is not the resident (`--screenshot`) and the dev pages.
+        assert_eq!(role(Launch::Home, false, false), None);
+        assert_eq!(role(Launch::Gallery, false, false), None);
+        assert_eq!(role(Launch::Notice, false, false), None);
+        assert_eq!(role(Launch::Edit(None), false, false), None);
+        // `--screenshot` and `--sample` runs render a picture and leave.
+        let picture = Launch::Edit(Some(PathBuf::from("capture.png")));
+        assert_eq!(role(picture, false, true), None);
+        assert_eq!(role(Launch::Capture { full: false }, false, true), None);
     }
 
     fn shot_at(x: i32, y: i32, scale: f32, w: u32, h: u32) -> capture::Shot {

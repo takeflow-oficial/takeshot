@@ -1,5 +1,5 @@
-//! Operating system and data: screen capture, clipboard and files, fonts, saved settings, and the
-//! resident's tray, hotkeys, single instance and start with the system.
+//! Operating system and data: screen capture, clipboard and files, fonts, saved settings, the
+//! process log, and the resident's tray, hotkeys, single instance and start with the system.
 
 pub mod actions;
 pub mod autostart;
@@ -10,6 +10,7 @@ pub mod headless;
 pub mod hotkeys;
 pub mod instance;
 pub mod library;
+pub mod log;
 #[cfg(target_os = "macos")]
 pub mod mac_titlebar;
 pub mod notify;

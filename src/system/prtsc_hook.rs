@@ -154,7 +154,7 @@ mod imp {
                     let _ = t.join();
                 } else {
                     // Without the quit message the thread would never end: leave it rather than hang.
-                    eprintln!("takeshot: could not stop the PrtSc hook thread");
+                    crate::system::log::line(format_args!("could not stop the PrtSc hook thread"));
                 }
             }
             if let Ok(mut s) = SINK.lock() {

@@ -36,7 +36,8 @@ CI builds and lints the macOS app but cannot click through it. Before a release,
 
 16. Settings > General > "Start with the system": log out and in. Takeshot starts in the menu bar only. The entry is `~/Library/LaunchAgents/Takeshot.plist`.
 17. Open an editor, draw something, then quit from the menu bar icon: the editor asks (Discard, Cancel, Save and close). Cancel keeps everything open; Discard closes everything.
+18. Logs: after steps 1 to 17, `~/Library/Logs/takeshot` holds `takeshot-resident.log` and `takeshot-capture.log`, `takeshot-edit.log` and `takeshot-pin.log` for the windows you opened (the warm capture is a Windows feature, so there is no `takeshot-standby.log` here). Each starts with a `start takeshot <version> macos <arch> role=<role> flags=...` line (flags only, no file names), and the log of a window that closed normally ends with `exit`. Open the folder in Console.app or Finder and check that no line holds a path of your captures.
 
 ## Uninstall
 
-18. Quit Takeshot, drag it from Applications to the Trash. Its data: settings in `~/Library/Application Support/takeshot`, thumbnails in `~/Library/Caches/takeshot`, the login entry above.
+19. Quit Takeshot, drag it from Applications to the Trash. Its data: settings in `~/Library/Application Support/takeshot`, thumbnails in `~/Library/Caches/takeshot`, logs in `~/Library/Logs/takeshot`, the login entry above.

@@ -9,6 +9,7 @@ use crate::system::hotkeys::{
     Shot, Status, default_keys, is_modifier_key, keys_from_egui, label, needs_modifier,
 };
 use crate::system::library::{self, Entry, Period, Thumbs};
+use crate::system::log;
 use crate::ui::i18n::{Msg, t as tr, tf};
 use crate::ui::kit::{CardThumb, WindowControl};
 use crate::ui::tokens::{ThemeId, Tokens, UiMode};
@@ -909,7 +910,7 @@ pub(crate) fn apply_rebind(
         }
         Err(e) => {
             if let RebindError::Refused(why) = &e {
-                eprintln!("takeshot: shortcut {keys}: {why}");
+                log::line(format_args!("shortcut {keys}: {why}"));
             }
             let shown = label(keys);
             let priority =

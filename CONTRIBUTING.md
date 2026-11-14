@@ -12,7 +12,7 @@ Contributions are welcome, from people and from AI agents. This guide takes you 
 
 ## Before you start
 
-- **A bug:** open an issue with the steps, what you expected, what happened and your system. Add a screenshot for anything on screen.
+- **A bug:** open an issue with the steps, what you expected, what happened and your system. Add a screenshot for anything on screen, and the Takeshot log files (the README says where they are, under Download).
 - **A feature or a change in behaviour:** open an issue first and describe it from the user's side. Takeshot's look and interaction are designed in [design/takeshot-ui.fig](design/takeshot-ui.fig) (open it in OpenPencil or Figma), so a visible change starts there, and the pull request that ships it updates the file to match the app.
 - **One topic per pull request:** several small pull requests get reviewed faster than one large one.
 
@@ -79,7 +79,7 @@ Contribuições são bem-vindas, de pessoas e de agentes de IA. Este guia leva v
 
 ## Antes de começar
 
-- **Um bug:** abra uma issue com os passos, o que você esperava, o que aconteceu e o seu sistema. Mande uma captura de tela se o problema aparece na tela.
+- **Um bug:** abra uma issue com os passos, o que você esperava, o que aconteceu e o seu sistema. Mande uma captura de tela se o problema aparece na tela, e os logs do Takeshot (o README diz onde ficam, em Download).
 - **Uma funcionalidade ou mudança de comportamento:** abra uma issue antes e descreva do ponto de vista de quem usa. O visual e a interação do Takeshot são desenhados em [design/takeshot-ui.fig](design/takeshot-ui.fig) (abra no OpenPencil ou no Figma), então uma mudança visível começa por lá, e o pull request que a entrega atualiza o arquivo para bater com o app.
 - **Um assunto por pull request:** vários PRs pequenos são revisados mais rápido que um grande.
 
