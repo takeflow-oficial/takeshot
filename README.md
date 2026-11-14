@@ -119,7 +119,7 @@ The builds are not code-signed yet:
 
 On Windows, the setup.exe's uninstaller stops Takeshot, removes its start-with-the-system entry (an update keeps it) and can delete its settings. The MSI installs for every user, asks for an administrator, and leaves the login entry behind.
 
-If something goes wrong, each Takeshot process keeps a log named `takeshot-<kind>.log` (`resident`, `standby`, `capture`, `edit` or `pin`; a file past 256 KB is set aside as `.previous.log`) in `%LOCALAPPDATA%\takeshot\logs` on Windows, `~/Library/Logs/takeshot` on macOS and `~/.local/state/takeshot/logs` on Linux. It holds the version, the errors and the crashes (by thread and source line), never your captures. On Windows a capture made through the warm standby (the usual PrtSc) is logged in the `standby` file, from the capture to the editor it turns into. Attach it to a bug report.
+If something goes wrong, each Takeshot process keeps a log named `takeshot-<kind>.log` (`resident`, `standby`, `capture`, `edit` or `pin`; a file past 256 KB is set aside as `.previous.log`) in `%LOCALAPPDATA%\takeshot\logs` on Windows, `~/Library/Logs/takeshot` on macOS and `~/.local/state/takeshot/logs` on Linux. It holds the version, the errors and the crashes (by thread and source line), never your captures. On Windows a capture made through the warm standby (the usual PrtSc) is logged in the `standby` file, from the capture to the editor it turns into. If Takeshot cannot start at all (for example no OpenGL on a remote desktop or in a virtual machine, or an old graphics driver), it shows a message with the reason and the log folder instead of closing without a word. Attach the log to a bug report.
 
 ## Architecture
 
@@ -304,7 +304,7 @@ As versões ainda não são assinadas:
 
 No Windows, o desinstalador do setup.exe encerra o Takeshot, remove a entrada de iniciar com o sistema (uma atualização a mantém) e pode apagar as configurações. O MSI instala para todos os usuários, pede administrador e deixa a entrada de login.
 
-Se algo der errado, cada processo do Takeshot guarda um log chamado `takeshot-<tipo>.log` (`resident`, `standby`, `capture`, `edit` ou `pin`; um arquivo acima de 256 KB vira `.previous.log`) em `%LOCALAPPDATA%\takeshot\logs` no Windows, `~/Library/Logs/takeshot` no macOS e `~/.local/state/takeshot/logs` no Linux. Ele guarda a versão, os erros e as falhas (pela thread e pela linha do código), nunca as suas capturas. No Windows, uma captura feita pelo standby quente (o PrtSc de sempre) fica no arquivo `standby`, da captura até o editor em que ela se transforma. Anexe-o ao reportar um bug.
+Se algo der errado, cada processo do Takeshot guarda um log chamado `takeshot-<tipo>.log` (`resident`, `standby`, `capture`, `edit` ou `pin`; um arquivo acima de 256 KB vira `.previous.log`) em `%LOCALAPPDATA%\takeshot\logs` no Windows, `~/Library/Logs/takeshot` no macOS e `~/.local/state/takeshot/logs` no Linux. Ele guarda a versão, os erros e as falhas (pela thread e pela linha do código), nunca as suas capturas. No Windows, uma captura feita pelo standby quente (o PrtSc de sempre) fica no arquivo `standby`, da captura até o editor em que ela se transforma. Se o Takeshot não conseguir iniciar (por exemplo sem OpenGL numa área de trabalho remota ou numa máquina virtual, ou com um driver de vídeo antigo), ele mostra uma mensagem com o motivo e a pasta de logs, em vez de fechar sem dizer nada. Anexe o log ao reportar um bug.
 
 ## Arquitetura
 

@@ -346,6 +346,10 @@ pub enum Msg {
     DescMoveResize,
     DescPickColor,
     ShortcutStatus,
+    StartFailedTitle,
+    StartFailedBody,
+    StartFailedGraphics,
+    StartFailedLog,
 }
 
 pub fn t(m: Msg) -> &'static str {
@@ -659,6 +663,12 @@ fn en(m: Msg) -> &'static str {
         Msg::DescMoveResize => "Move / resize the selection",
         Msg::DescPickColor => "Copy the color under the pointer",
         Msg::ShortcutStatus => "Status",
+        Msg::StartFailedTitle => "Takeshot could not start",
+        Msg::StartFailedBody => "Takeshot could not start: {0}",
+        Msg::StartFailedGraphics => {
+            "Takeshot needs OpenGL 2.0 or newer. Update the graphics driver; on a remote desktop or a virtual machine, turn graphics acceleration on."
+        }
+        Msg::StartFailedLog => "Details are in the log folder: {0}",
     }
 }
 
@@ -957,6 +967,12 @@ fn pt(m: Msg) -> &'static str {
         Msg::DescMoveResize => "Mover / redimensionar a seleção",
         Msg::DescPickColor => "Copiar a cor sob o cursor",
         Msg::ShortcutStatus => "Status",
+        Msg::StartFailedTitle => "O Takeshot não conseguiu iniciar",
+        Msg::StartFailedBody => "O Takeshot não conseguiu iniciar: {0}",
+        Msg::StartFailedGraphics => {
+            "O Takeshot precisa de OpenGL 2.0 ou mais novo. Atualize o driver de vídeo; em uma área de trabalho remota ou máquina virtual, ative a aceleração gráfica."
+        }
+        Msg::StartFailedLog => "Os detalhes estão na pasta de logs: {0}",
     }
 }
 

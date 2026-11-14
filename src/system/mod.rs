@@ -19,5 +19,6 @@ pub mod recents;
 pub mod resident;
 pub mod settings;
 pub mod standby;
+pub mod startup_error;
 pub mod thumbcache;
 pub mod tray;
