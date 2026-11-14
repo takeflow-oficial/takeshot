@@ -61,15 +61,28 @@ fn without_location(line: &str) -> String {
     out
 }
 
-/// The first line of `reason` without its source location, cut to `REASON_MAX` characters.
+/// The first line of `reason` without its source location: what the log keeps whole.
+fn first_line(reason: &str) -> String {
+    without_location(reason.lines().next().unwrap_or_default())
+}
+
+/// `first_line` for the box: past `REASON_MAX` characters the middle goes and both ends stay, since
+/// eframe puts a long dump of the glutin config template first and the cause last.
 fn short(reason: &str) -> String {
-    let line = without_location(reason.lines().next().unwrap_or_default());
-    if line.chars().count() > REASON_MAX {
-        let cut: String = line.chars().take(REASON_MAX).collect();
-        format!("{cut}...")
-    } else {
-        line
+    let line = first_line(reason);
+    let n = line.chars().count();
+    if n <= REASON_MAX {
+        return line;
     }
+    let half = REASON_MAX / 2;
+    let head: String = line.chars().take(half).collect();
+    let tail: String = line.chars().skip(n - half).collect();
+    format!("{head}...{tail}")
+}
+
+/// The log line for a start that failed: the whole reason, since the box points here for details.
+fn failure_line(reason: &str) -> String {
+    format!("could not start: {}", first_line(reason))
 }
 
 /// The box for a failure of `cause` with `reason`; `log_dir` is where the log is, when there is one.
@@ -83,11 +96,7 @@ pub fn notice(cause: Cause, reason: &str, log_dir: Option<&Path>) -> Notice {
     }
     Notice {
         title: t(Msg::StartFailedTitle).to_owned(),
-        body: parts.join(
-            "
-
-",
-        ),
+        body: parts.join("\n\n"),
     }
 }
 
@@ -105,7 +114,7 @@ fn show(notice: &Notice) {
 /// process or a picture rendering), shows the box.
 pub fn report(e: &eframe::Error, tell: bool) {
     let reason = e.to_string();
-    log::line(format_args!("could not start: {}", short(&reason)));
+    log::line(format_args!("{}", failure_line(&reason)));
     if tell {
         show(&notice(cause(e), &reason, log::dir().as_deref()));
     }
@@ -169,9 +178,25 @@ mod tests {
         let long = "y".repeat(1000);
         let cut = short(&long);
         assert_eq!(cut.chars().count(), REASON_MAX + 3, "{cut}");
-        assert!(cut.ends_with("..."));
+        assert!(cut.contains("..."));
         let n = notice(Cause::Other, &reason, None);
         assert!(!n.body.contains("xxx"), "{}", n.body);
+    }
+
+    #[test]
+    fn a_long_reason_keeps_both_ends_in_the_box_and_all_of_it_in_the_log() {
+        // What eframe says when glutin finds no config: a dump of the template, then the cause.
+        let dump = "d".repeat(450);
+        let reason =
+            format!("Found no glutin configs matching the template: {dump}. Error: BadMatch");
+        let boxed = short(&reason);
+        assert!(boxed.starts_with("Found no glutin configs"), "{boxed}");
+        assert!(boxed.ends_with("Error: BadMatch"), "{boxed}");
+        assert_eq!(boxed.chars().count(), REASON_MAX + 3, "{boxed}");
+        // The box points to the log for details, so the log holds the whole line.
+        assert_eq!(failure_line(&reason), format!("could not start: {reason}"));
+        assert!(!failure_line("first\nsecond").contains("second"));
+        assert_eq!(failure_line("x at /p/q.rs:9: y"), "could not start: x: y");
     }
 
     #[test]
