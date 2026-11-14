@@ -14,7 +14,7 @@ use crate::system::actions;
 use crate::system::hotkeys::{Shot, effective_status, should_offer_priority};
 use crate::system::instance::Page;
 use crate::system::resident::{
-    Resident, ResidentEvent, XAction, left_click, on_wayland, on_x, remembered,
+    QuitWaiter, Resident, ResidentEvent, XAction, left_click, on_wayland, on_x, remembered,
 };
 use crate::system::tray::{TrayAction, TrayEntry, TrayEvent, tray_entries};
 use crate::ui::i18n::{Msg, t as tr};
@@ -66,6 +66,8 @@ pub struct Shell {
     quit_asked: bool,
     /// A Quit waiting for the editors, pinned pictures and capture to answer.
     quit_run: Option<crate::system::instance::QuitRun>,
+    /// The `takeshot --quit` runs waiting on that Quit.
+    quit_waiters: Vec<QuitWaiter>,
     /// Bumped by the recents thread, so the Linux native menu is rebuilt when the list changes.
     recents_version: Arc<std::sync::atomic::AtomicU64>,
     menu_version: u64,
@@ -93,6 +95,7 @@ impl Shell {
             page: None,
             quit_asked: false,
             quit_run: None,
+            quit_waiters: Vec::new(),
             recents_version: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             menu_version: u64::MAX,
             next_recents: 0.0,
@@ -261,6 +264,10 @@ impl Shell {
                 }
             }
             ResidentEvent::Tray(TrayEvent::Action(a)) => self.run(ctx, a, home, shared),
+            ResidentEvent::Quit(waiter) => {
+                self.quit_waiters.push(waiter);
+                self.quit(ctx);
+            }
         }
     }
 
@@ -375,6 +382,9 @@ impl Shell {
 
     /// Quit: the next tick asks every window of its own to close first.
     fn quit(&mut self, ctx: &egui::Context) {
+        if self.quitting {
+            return;
+        }
         self.quit_asked = true;
         ctx.request_repaint();
     }
@@ -405,7 +415,14 @@ impl Shell {
         };
         match run.poll() {
             QuitOutcome::Waiting => {}
-            QuitOutcome::Stay => self.quit_run = None,
+            QuitOutcome::Stay => {
+                self.quit_run = None;
+                for waiter in self.quit_waiters.drain(..) {
+                    waiter.stay();
+                }
+            }
+            // The `--quit` waiters stay as they are: their connections close with the process, which
+            // is how they learn it is gone (let go earlier, they would report a resident still ending).
             QuitOutcome::Quit => {
                 self.quit_run = None;
                 self.quitting = true;
@@ -691,6 +708,73 @@ mod tests {
             .remove(&ViewportId::ROOT)
             .map(|v| v.commands)
             .unwrap_or_default()
+    }
+
+    /// A `--quit` waiting on the shell: the shell and the receiver its sender answers on.
+    fn waiting_quit(shell: &mut Shell) -> std::sync::mpsc::Receiver<()> {
+        let mut shared = Shared::for_tests();
+        let ctx = egui::Context::default();
+        let (tx, rx) = std::sync::mpsc::channel();
+        shell.handle(
+            &ctx,
+            ResidentEvent::Quit(QuitWaiter::new(tx)),
+            None,
+            &mut shared,
+        );
+        rx
+    }
+
+    #[test]
+    fn a_quit_from_outside_asks_like_the_tray_and_the_waiter_hears_a_cancel() {
+        let mut shell = Shell::new(false, false);
+        let rx = waiting_quit(&mut shell);
+        assert!(shell.quit_asked, "the same Quit as the tray's");
+        // A window's user cancels.
+        let ctx = egui::Context::default();
+        let window = format!("takeshot-test-{}-shell-cancel", std::process::id());
+        crate::system::instance::listen_for_quit(
+            &window,
+            |reply| {
+                let _ = reply.send(false);
+            },
+            || {},
+        )
+        .unwrap();
+        shell.quit_run = Some(crate::system::instance::QuitRun::start(vec![window], || {}));
+        for _ in 0..200 {
+            shell.check_quit(&ctx);
+            if shell.quit_run.is_none() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(shell.quit_run.is_none(), "the Quit ended");
+        assert!(!shell.is_quitting());
+        assert_eq!(
+            rx.recv_timeout(std::time::Duration::from_secs(1)),
+            Ok(()),
+            "the waiter is told the resident stays"
+        );
+    }
+
+    #[test]
+    fn a_quit_that_goes_through_keeps_the_waiter_until_the_process_ends() {
+        let mut shell = Shell::new(false, false);
+        let rx = waiting_quit(&mut shell);
+        let ctx = egui::Context::default();
+        // No window of its own is open: every one agrees at once.
+        shell.quit_run = Some(crate::system::instance::QuitRun::start(vec![], || {}));
+        shell.check_quit(&ctx);
+        assert!(shell.is_quitting());
+        // Its connection stays open (a closed one reads as "it quit" before the process is gone).
+        assert!(
+            matches!(rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)),
+            "the waiter is neither told to stay nor let go"
+        );
+        // A second `--quit` while the process is ending asks for nothing more.
+        shell.quit_asked = false;
+        let _late = waiting_quit(&mut shell);
+        assert!(!shell.quit_asked);
     }
 
     #[test]

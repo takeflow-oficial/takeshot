@@ -169,15 +169,12 @@ pub fn second_launch_page(minimized: bool) -> Option<Page> {
     (!minimized).then_some(Page::Start)
 }
 
-/// Asks the resident to show `page`. Retries briefly: the resident may be between connections.
-pub fn send_show(name: &str, page: Page) -> io::Result<()> {
+/// Connects to the resident, retrying briefly: it may be between connections.
+fn connect_retrying(name: &str) -> io::Result<Stream> {
     let mut last = io::Error::other("no attempt");
     for _ in 0..10 {
         match connect(name) {
-            Ok(mut s) => {
-                s.write_all(format!("show {}\n", page.as_str()).as_bytes())?;
-                return s.flush();
-            }
+            Ok(s) => return Ok(s),
             Err(e) => {
                 last = e;
                 std::thread::sleep(Duration::from_millis(50));
@@ -187,6 +184,13 @@ pub fn send_show(name: &str, page: Page) -> io::Result<()> {
     Err(last)
 }
 
+/// Asks the resident to show `page`.
+pub fn send_show(name: &str, page: Page) -> io::Result<()> {
+    let mut s = connect_retrying(name)?;
+    s.write_all(format!("show {}\n", page.as_str()).as_bytes())?;
+    s.flush()
+}
+
 /// A line a client sends the resident.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Request {
@@ -194,6 +198,8 @@ pub enum Request {
     Show(Page),
     /// A window of its own (editor, pinned picture, capture) started: its process id.
     Child(u32),
+    /// `takeshot --quit`: quit the way the tray's Quit does, and say how it went.
+    Quit,
 }
 
 /// Reads one request line.
@@ -202,9 +208,59 @@ pub fn parse_request(line: &str) -> Option<Request> {
     if let Some(p) = line.strip_prefix("show ") {
         return Page::parse(p).map(Request::Show);
     }
+    if line == "quit" {
+        return Some(Request::Quit);
+    }
     line.strip_prefix("child ")
         .and_then(|pid| pid.parse().ok())
         .map(Request::Child)
+}
+
+/// How a `takeshot --quit` ended.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum QuitReply {
+    /// No resident answers: nothing to quit.
+    NotRunning,
+    /// The resident quit (every window agreed).
+    Quit,
+    /// A window's user chose Cancel: everything stays open.
+    Stay,
+    /// The resident did not say in time (a window may still be asking its user).
+    NoAnswer,
+}
+
+impl QuitReply {
+    /// The process exit code: 0 when nothing is left running, 1 after a Cancel, 2 on no answer.
+    pub fn exit_code(self) -> i32 {
+        match self {
+            QuitReply::NotRunning | QuitReply::Quit => 0,
+            QuitReply::Stay => 1,
+            QuitReply::NoAnswer => 2,
+        }
+    }
+}
+
+/// Asks the resident to quit and waits up to `wait` for how it went. The resident answers only a
+/// Cancel (`stay`); when it quits, its end of the connection just closes, which is also what a
+/// resident that died meanwhile looks like.
+pub fn send_quit(name: &str, wait: Duration) -> QuitReply {
+    let Ok(mut s) = connect_retrying(name) else {
+        return QuitReply::NotRunning;
+    };
+    if s.write_all(b"quit\n").and_then(|_| s.flush()).is_err() {
+        return QuitReply::Quit;
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let _ = BufReader::new(s).read_line(&mut line);
+        let _ = tx.send(line);
+    });
+    match rx.recv_timeout(wait) {
+        Ok(line) if line.trim() == "stay" => QuitReply::Stay,
+        Ok(_) => QuitReply::Quit,
+        Err(_) => QuitReply::NoAnswer,
+    }
 }
 
 /// The socket name a child process listens on for the resident's Quit.
@@ -215,13 +271,9 @@ pub fn child_endpoint(base: &str, pid: u32) -> String {
 /// Tells the resident (when one runs) that this process is a window of its own, so its Quit asks
 /// it to close too.
 pub fn register_child(base: &str, pid: u32) {
-    for _ in 0..10 {
-        if let Ok(mut s) = connect(base) {
-            let _ = s.write_all(format!("child {pid}\n").as_bytes());
-            let _ = s.flush();
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(50));
+    if let Ok(mut s) = connect_retrying(base) {
+        let _ = s.write_all(format!("child {pid}\n").as_bytes());
+        let _ = s.flush();
     }
 }
 
@@ -414,20 +466,23 @@ impl Listener {
     /// Answers second launches on a background thread for the rest of the process.
     #[cfg(test)]
     pub fn spawn(self, on_show: impl Fn(Page) + Send + Sync + 'static) {
-        self.serve(on_show, |_| {});
+        self.serve(on_show, |_| {}, |_| {});
     }
 
-    /// Answers second launches (`on_show`) and children registering (`on_child`) on a background
+    /// Answers second launches (`on_show`), children registering (`on_child`) and `--quit`
+    /// (`on_quit`, which gets a sender: a `()` through it says the resident stays) on a background
     /// thread for the rest of the process. Each connection gets its own short thread and at most
     /// 64 bytes, so a client that never writes cannot hold up the next launch.
     pub fn serve(
         self,
         on_show: impl Fn(Page) + Send + Sync + 'static,
         on_child: impl Fn(u32) + Send + Sync + 'static,
+        on_quit: impl Fn(std::sync::mpsc::Sender<()>) + Send + Sync + 'static,
     ) {
         let listener = self.0;
         let on_show = Arc::new(on_show);
         let on_child = Arc::new(on_child);
+        let on_quit = Arc::new(on_quit);
         let spawned = std::thread::Builder::new()
             .name("takeshot-instance".into())
             .spawn(move || {
@@ -436,13 +491,26 @@ impl Listener {
                         std::thread::sleep(Duration::from_millis(50));
                         continue;
                     };
-                    let (on_show, on_child) = (on_show.clone(), on_child.clone());
+                    let (on_show, on_child, on_quit) =
+                        (on_show.clone(), on_child.clone(), on_quit.clone());
                     std::thread::spawn(move || {
                         let mut line = String::new();
-                        if BufReader::new(conn.take(64)).read_line(&mut line).is_ok() {
+                        let mut reader = BufReader::new(conn.take(64));
+                        if reader.read_line(&mut line).is_ok() {
                             match parse_request(&line) {
                                 Some(Request::Show(page)) => on_show(page),
                                 Some(Request::Child(pid)) => on_child(pid),
+                                Some(Request::Quit) => {
+                                    let (tx, rx) = std::sync::mpsc::channel();
+                                    on_quit(tx);
+                                    // Only a Cancel is answered: a resident that quits closes the
+                                    // connection with its process.
+                                    if rx.recv().is_ok() {
+                                        let mut conn = reader.into_inner().into_inner();
+                                        let _ =
+                                            conn.write_all(b"stay\n").and_then(|_| conn.flush());
+                                    }
+                                }
                                 None => {}
                             }
                         }
@@ -547,14 +615,15 @@ mod tests {
     }
 
     #[test]
-    fn requests_read_show_and_child() {
+    fn requests_read_show_child_and_quit() {
         assert_eq!(
             parse_request("show settings\n"),
             Some(Request::Show(Page::Settings))
         );
         assert_eq!(parse_request("child 4242\n"), Some(Request::Child(4242)));
         assert_eq!(parse_request("child x"), None);
-        assert_eq!(parse_request("quit"), None);
+        assert_eq!(parse_request("quit\n"), Some(Request::Quit));
+        assert_eq!(parse_request("quit now"), None);
     }
 
     #[test]
@@ -569,9 +638,60 @@ mod tests {
             move |pid| {
                 let _ = tx.send(pid);
             },
+            |_| {},
         );
         register_child(&name, 4242);
         assert_eq!(rx.recv_timeout(Duration::from_secs(2)), Ok(4242));
+    }
+
+    /// A resident whose `--quit` handler runs `on_quit` with the sender the connection waits on.
+    fn quit_server(
+        name: &str,
+        on_quit: impl Fn(std::sync::mpsc::Sender<()>) + Send + Sync + 'static,
+    ) {
+        let Claim::Primary(listener) = claim(name) else {
+            panic!("the first claim must be primary");
+        };
+        listener.serve(|_| {}, |_| {}, on_quit);
+    }
+
+    #[test]
+    fn a_quit_from_outside_says_how_it_ended() {
+        let soon = Duration::from_secs(5);
+        // No resident: nothing to quit.
+        assert_eq!(
+            send_quit(&unique("quit-nobody"), Duration::from_secs(1)),
+            QuitReply::NotRunning
+        );
+        // A window's user cancelled: the resident says it stays.
+        let stays = unique("quit-stay");
+        quit_server(&stays, |stay| {
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_millis(100));
+                let _ = stay.send(());
+            });
+        });
+        assert_eq!(send_quit(&stays, soon), QuitReply::Stay);
+        // The resident goes: nobody answers, the connection just closes.
+        let goes = unique("quit-go");
+        quit_server(&goes, drop);
+        assert_eq!(send_quit(&goes, soon), QuitReply::Quit);
+        // Still asking when the wait is over.
+        let hung = unique("quit-hung");
+        let held = Arc::new(std::sync::Mutex::new(Vec::new()));
+        quit_server(&hung, move |stay| held.lock().unwrap().push(stay));
+        assert_eq!(
+            send_quit(&hung, Duration::from_millis(300)),
+            QuitReply::NoAnswer
+        );
+    }
+
+    #[test]
+    fn the_exit_code_tells_the_installer_how_the_quit_ended() {
+        assert_eq!(QuitReply::NotRunning.exit_code(), 0);
+        assert_eq!(QuitReply::Quit.exit_code(), 0);
+        assert_eq!(QuitReply::Stay.exit_code(), 1);
+        assert_eq!(QuitReply::NoAnswer.exit_code(), 2);
     }
 
     #[test]
