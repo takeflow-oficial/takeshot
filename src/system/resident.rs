@@ -5,7 +5,7 @@ use crate::system::instance::{Listener, Page};
 use crate::system::log;
 use crate::system::settings::{OnClose, Settings, TrayClick};
 use crate::system::tray::{Tray, TrayEvent};
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, mpsc};
 
 /// Something the resident must react to on the UI thread.
 #[derive(Clone, PartialEq, Debug)]
@@ -13,6 +13,33 @@ pub enum ResidentEvent {
     Show(Page),
     Shot(Shot),
     Tray(TrayEvent),
+    /// `takeshot --quit`: quit like the tray's Quit; the waiter hears a Cancel.
+    Quit(QuitWaiter),
+}
+
+/// A `takeshot --quit` waiting to hear whether the resident stays. The event is cloned and
+/// compared, so the one sender sits behind a shared slot.
+#[derive(Clone, Debug)]
+pub struct QuitWaiter(Arc<Mutex<Option<mpsc::Sender<()>>>>);
+
+impl QuitWaiter {
+    pub fn new(stay: mpsc::Sender<()>) -> Self {
+        Self(Arc::new(Mutex::new(Some(stay))))
+    }
+
+    /// Tells the `--quit` that the resident stays: a window's user chose Cancel.
+    pub fn stay(&self) {
+        let tx = self.0.lock().ok().and_then(|mut t| t.take());
+        if let Some(tx) = tx {
+            let _ = tx.send(());
+        }
+    }
+}
+
+impl PartialEq for QuitWaiter {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
 }
 
 /// What the X of the main window does right now.
@@ -135,6 +162,7 @@ impl Resident {
         if let Some(l) = listener {
             let s = sender.clone();
             let list = children.clone();
+            let quit = sender.clone();
             l.serve(
                 move |page| s.send(ResidentEvent::Show(page)),
                 move |pid| {
@@ -142,6 +170,7 @@ impl Resident {
                         c.push(pid);
                     }
                 },
+                move |stay| quit.send(ResidentEvent::Quit(QuitWaiter::new(stay))),
             );
         }
         let s = sender.clone();

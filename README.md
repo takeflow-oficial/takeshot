@@ -192,7 +192,7 @@ On Windows `rust-toolchain.toml` picks the MSVC toolchain. On Linux install firs
 
 Installers: `cargo install cargo-packager --version 0.11.8 --locked`, then `cargo packager --release --formats nsis,wix` (Windows) or `scripts/linux-packages.sh` (deb and AppImage in a container; `scripts/linux-smoke.sh` opens them on X11 and Wayland, see [docs/testing-linux.md](docs/testing-linux.md)).
 
-`takeshot --screenshot out.png` draws a window and saves its picture, with `--page inicio|estilo|ajustes|editor|captura`, `--theme takeui|coral`, `--mode light|dark` and `--lang en|pt`; `scripts/screenshots.sh` renders every screen in the four looks. `takeshot --minimized` starts in the tray only, and `takeshot --native-titlebar` (or `TAKESHOT_NATIVE_TITLEBAR=1`) uses the system's title bar, for the few graphics drivers that misplace clicks on a borderless window.
+`takeshot --screenshot out.png` draws a window and saves its picture, with `--page inicio|estilo|ajustes|editor|captura`, `--theme takeui|coral`, `--mode light|dark` and `--lang en|pt`; `scripts/screenshots.sh` renders every screen in the four looks. `takeshot --minimized` starts in the tray only, `takeshot --quit` asks the running Takeshot to quit the way the tray's Quit does and waits for the answer (exit code 0: it quit or none was running, 1: you cancelled a window's save question, 2: no answer in 30 seconds; the Windows installer runs it before it replaces the app), and `takeshot --native-titlebar` (or `TAKESHOT_NATIVE_TITLEBAR=1`) uses the system's title bar, for the few graphics drivers that misplace clicks on a borderless window.
 
 ## Contributing
 
@@ -336,7 +336,7 @@ No Windows o `rust-toolchain.toml` usa o toolchain MSVC. No Linux instale antes:
 
 Instaladores: `cargo install cargo-packager --version 0.11.8 --locked`, depois `cargo packager --release --formats nsis,wix` (Windows) ou `scripts/linux-packages.sh` (deb e AppImage num container; `scripts/linux-smoke.sh` abre os dois no X11 e no Wayland, veja [docs/testing-linux.md](docs/testing-linux.md)).
 
-`takeshot --screenshot saida.png` desenha uma janela e salva a imagem dela, com `--page inicio|estilo|ajustes|editor|captura`, `--theme takeui|coral`, `--mode light|dark` e `--lang en|pt`; `scripts/screenshots.sh` gera todas as telas nos quatro visuais. `takeshot --minimized` sobe só na bandeja, e `takeshot --native-titlebar` (ou `TAKESHOT_NATIVE_TITLEBAR=1`) usa a barra de título do sistema, para os poucos drivers de vídeo que deslocam os cliques numa janela sem borda.
+`takeshot --screenshot saida.png` desenha uma janela e salva a imagem dela, com `--page inicio|estilo|ajustes|editor|captura`, `--theme takeui|coral`, `--mode light|dark` e `--lang en|pt`; `scripts/screenshots.sh` gera todas as telas nos quatro visuais. `takeshot --minimized` sobe só na bandeja, `takeshot --quit` pede ao Takeshot em execução que saia como o Sair da bandeja e espera a resposta (código de saída 0: saiu ou não havia nenhum rodando, 1: você cancelou a pergunta de salvar de uma janela, 2: sem resposta em 30 segundos; o instalador do Windows o chama antes de trocar o app), e `takeshot --native-titlebar` (ou `TAKESHOT_NATIVE_TITLEBAR=1`) usa a barra de título do sistema, para os poucos drivers de vídeo que deslocam os cliques numa janela sem borda.
 
 ## Contribuindo
 

@@ -166,6 +166,8 @@ struct Args {
     captures_dir: Option<String>,
     select: Option<String>,
     section: Option<home::SettingsSection>,
+    /// `--quit`: ask the running resident to quit and leave, with no window of its own.
+    quit: bool,
 }
 
 /// What `--page` names: a page of the main window, or the component gallery.
@@ -221,6 +223,7 @@ fn parse_args() -> Args {
         captures_dir: None,
         select: None,
         section: None,
+        quit: false,
     };
     let v: Vec<String> = std::env::args().skip(1).collect();
     let mut full = false;
@@ -235,6 +238,7 @@ fn parse_args() -> Args {
             "--capture" => capture = true,
             "--capture-standby" => a.launch = Launch::Standby,
             "--minimized" => a.minimized = true,
+            "--quit" => a.quit = true,
             "--native-titlebar" => ui::chrome::init(true),
             "--captures-dir" => {
                 a.captures_dir = v.get(i + 1).cloned();
@@ -804,6 +808,18 @@ fn tells_start_failure(launch: &Launch, throwaway: bool) -> bool {
     !throwaway && !matches!(launch, Launch::Standby)
 }
 
+/// How long `--quit` waits for the resident: a window with unsaved changes asks its user first.
+const QUIT_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// `takeshot --quit`: asks the running resident to quit the way the tray's Quit does, and says how
+/// it went in the exit code (0 it quit or none ran, 1 a window's user cancelled, 2 no answer in
+/// time). The installer asks this before it would kill the process.
+fn quit_running_resident() -> i32 {
+    let reply = system::instance::send_quit(&system::instance::endpoint(), QUIT_WAIT);
+    log::line(format_args!("quit: {reply:?}"));
+    reply.exit_code()
+}
+
 fn main() -> eframe::Result {
     let res = run();
     log::finish(&res);
@@ -813,6 +829,10 @@ fn main() -> eframe::Result {
 fn run() -> eframe::Result {
     ui::chrome::init(false);
     let args = parse_args();
+    // A verb, not a window: nothing to start, no log of its own.
+    if args.quit {
+        std::process::exit(quit_running_resident());
+    }
     let settings = settings::Settings::load();
     // The language first: window titles are set before the first frame.
     ui::i18n::set_lang(ui::i18n::resolve(
