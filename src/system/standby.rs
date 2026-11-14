@@ -187,6 +187,7 @@ impl Warm {
                     return;
                 }
                 if instance::connect(&base).is_err() {
+                    crate::system::log::line(format_args!("the resident is gone, leaving"));
                     std::process::exit(0);
                 }
             }

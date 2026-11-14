@@ -10,6 +10,7 @@ use std::sync::mpsc::{Receiver, channel};
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::SystemTime;
 
+use crate::system::log;
 use crate::system::thumbcache::Cache;
 
 /// One image in the folder.
@@ -191,11 +192,11 @@ impl Thumbs {
                 .spawn(move || thumb_worker(&ctx, &queue, &done, cache.as_ref(), worker == 0));
             match spawned {
                 Ok(_) => started += 1,
-                Err(e) => eprintln!("takeshot: no thumbnails: {e}"),
+                Err(e) => log::line(format_args!("no thumbnails: {e}")),
             }
         }
         if started == 0 {
-            eprintln!("takeshot: Início shows no thumbnails");
+            log::line(format_args!("Início shows no thumbnails"));
         }
         Self {
             jobs,

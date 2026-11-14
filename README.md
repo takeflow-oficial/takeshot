@@ -119,6 +119,8 @@ The builds are not code-signed yet:
 
 On Windows, the setup.exe's uninstaller stops Takeshot, removes its start-with-the-system entry (an update keeps it) and can delete its settings. The MSI installs for every user, asks for an administrator, and leaves the login entry behind.
 
+If something goes wrong, each Takeshot process keeps a log named `takeshot-<kind>.log` (`resident`, `standby`, `capture`, `edit` or `pin`; a file past 256 KB is set aside as `.previous.log`) in `%LOCALAPPDATA%\takeshot\logs` on Windows, `~/Library/Logs/takeshot` on macOS and `~/.local/state/takeshot/logs` on Linux. It holds the version, the errors and the crashes (by thread and source line), never your captures. Attach it to a bug report.
+
 ## Architecture
 
 ```mermaid
@@ -301,6 +303,8 @@ As versões ainda não são assinadas:
 - **Linux**: o ícone da bandeja precisa de um painel com AppIndicator (`libayatana-appindicator3-1`); sem ele, Sair fica em Ajustes > Geral. No Wayland, o aviso ao copiar ou salvar é uma notificação do desktop.
 
 No Windows, o desinstalador do setup.exe encerra o Takeshot, remove a entrada de iniciar com o sistema (uma atualização a mantém) e pode apagar as configurações. O MSI instala para todos os usuários, pede administrador e deixa a entrada de login.
+
+Se algo der errado, cada processo do Takeshot guarda um log chamado `takeshot-<tipo>.log` (`resident`, `standby`, `capture`, `edit` ou `pin`; um arquivo acima de 256 KB vira `.previous.log`) em `%LOCALAPPDATA%\takeshot\logs` no Windows, `~/Library/Logs/takeshot` no macOS e `~/.local/state/takeshot/logs` no Linux. Ele guarda a versão, os erros e as falhas (pela thread e pela linha do código), nunca as suas capturas. Anexe-o ao reportar um bug.
 
 ## Arquitetura
 

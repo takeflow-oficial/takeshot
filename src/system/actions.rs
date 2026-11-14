@@ -171,7 +171,14 @@ pub fn spawn_self(args: &[&str]) -> Result<(), String> {
     if crate::ui::chrome::native() {
         cmd.arg("--native-titlebar");
     }
-    cmd.spawn().map(|_| ()).map_err(|e| e.to_string())
+    // The one place a PrtSc that does nothing can be told apart from a PrtSc that never came.
+    cmd.spawn().map(|_| ()).map_err(|e| {
+        crate::system::log::line(format_args!(
+            "could not start {}: {e}",
+            crate::system::log::flags(args)
+        ));
+        e.to_string()
+    })
 }
 
 /// The arguments that start a capture of `shot`. `wait` is for a window that has just been
