@@ -25,7 +25,7 @@ mod views;
 
 use engine::{model, render};
 use screens::{editor, home, notice, overlay, pin, widgets};
-use system::{actions, capture, fonts, log, settings, standby};
+use system::{actions, capture, fonts, log, settings, standby, startup_error};
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -797,6 +797,13 @@ fn log_role(launch: &Launch, resident_mode: bool, throwaway: bool) -> Option<&'s
     }
 }
 
+/// Whether a start that fails is shown to the user in a box. Not for the warm standby (a background
+/// process nobody started by hand, which the resident keeps replacing) and not for the runs that
+/// only render a picture; every other run is one the user asked for.
+fn tells_start_failure(launch: &Launch, throwaway: bool) -> bool {
+    !throwaway && !matches!(launch, Launch::Standby)
+}
+
 fn main() -> eframe::Result {
     let res = run();
     log::finish(&res);
@@ -836,10 +843,15 @@ fn run() -> eframe::Result {
         log::init(role, &log::flags(std::env::args().skip(1)));
     }
 
+    let tell = tells_start_failure(&args.launch, throwaway);
+
     // Linux: the main window comes and goes, so the resident runs its windows one at a time.
     if resident_mode && !screens::shell::HOSTED {
         let res = run_resident_windows(&args, settings, listener);
         actions::wait_clipboard_keepers();
+        if let Err(e) = &res {
+            startup_error::report(e, tell);
+        }
         return res;
     }
 
@@ -1115,6 +1127,9 @@ fn run() -> eframe::Result {
     );
     actions::wait_clipboard_keepers();
     system::notify::wait_pending();
+    if let Err(e) = &res {
+        startup_error::report(e, tell);
+    }
     res
 }
 
@@ -1473,6 +1488,23 @@ mod tests {
         let picture = Launch::Edit(Some(PathBuf::from("capture.png")));
         assert_eq!(role(picture, false, true), None);
         assert_eq!(role(Launch::Capture { full: false }, false, true), None);
+    }
+
+    #[test]
+    fn a_failed_start_is_told_for_the_runs_the_user_asked_for_only() {
+        assert!(tells_start_failure(&Launch::Home, false));
+        assert!(tells_start_failure(&Launch::Capture { full: false }, false));
+        assert!(tells_start_failure(&Launch::Edit(None), false));
+        assert!(tells_start_failure(
+            &Launch::Pin(PathBuf::from("p.png")),
+            false
+        ));
+        assert!(tells_start_failure(&Launch::Gallery, false));
+        // The warm standby is replaced by the resident again and again: a box each time would nag.
+        assert!(!tells_start_failure(&Launch::Standby, false));
+        // `--screenshot` and `--sample` render a picture for a script, nobody is there to click.
+        assert!(!tells_start_failure(&Launch::Home, true));
+        assert!(!tells_start_failure(&Launch::Edit(None), true));
     }
 
     fn shot_at(x: i32, y: i32, scale: f32, w: u32, h: u32) -> capture::Shot {
