@@ -382,6 +382,56 @@ struct App {
     quit_close: Arc<AtomicBool>,
     /// When the warm capture was asked, until its first full-size frame is logged (`standby::mark`).
     standby_at: Option<std::time::Instant>,
+    /// The warm capture's window, sized but still off screen, waiting to be drawn before it is shown.
+    standby_place: Option<StandbyPlace>,
+}
+
+/// Where and when the warm capture's window moves onto its monitor.
+struct StandbyPlace {
+    pos: egui::Pos2,
+    /// When the capture was asked, for the timing log and the limit of the wait.
+    at: std::time::Instant,
+    /// Full-size frames still to draw off screen before the move.
+    frames_left: u8,
+}
+
+/// The longest the warm capture's window waits off screen for its picture to be drawn: a window
+/// that never draws (nothing wakes it) must still show up.
+const STANDBY_PLACE_LIMIT: std::time::Duration = std::time::Duration::from_millis(1000);
+
+impl App {
+    /// Moves the warm capture's window onto its monitor, once it has drawn the picture at full size
+    /// off screen (`full_size`: this is a pass of the window drawn at that size) or, from `logic`,
+    /// when the limit is up. Shown at once, the window would be a blank rectangle over the screen
+    /// until its first full-size frame was ready, some 400 ms later: that was the black flash.
+    fn place_standby(&mut self, ctx: &egui::Context, full_size: bool) {
+        let Some(p) = &mut self.standby_place else {
+            return;
+        };
+        if full_size && p.frames_left > 0 {
+            // This frame is on its way to the screen; the next one proves it was shown.
+            p.frames_left -= 1;
+            ctx.request_repaint();
+            return;
+        }
+        if !full_size && p.at.elapsed() < STANDBY_PLACE_LIMIT {
+            ctx.request_repaint_after(STANDBY_PLACE_LIMIT);
+            return;
+        }
+        use egui::ViewportCommand as C;
+        ctx.send_viewport_cmd(C::OuterPosition(p.pos));
+        ctx.send_viewport_cmd(C::Focus);
+        standby::mark(
+            p.at,
+            if full_size {
+                "window placed on its monitor"
+            } else {
+                "window placed on its monitor (limit)"
+            },
+        );
+        self.standby_place = None;
+        ctx.request_repaint();
+    }
 }
 
 impl App {
@@ -427,6 +477,11 @@ impl App {
         (self.editor_window, self.notice_area) = place_for(&shot);
         let theme = self.shared.settings.ui_theme;
         capture_window_commands(ctx, &shot);
+        self.standby_place = Some(StandbyPlace {
+            pos: capture_window_position(&shot),
+            at,
+            frames_left: 1,
+        });
         ctx.send_viewport_cmd(egui::ViewportCommand::Icon(Some(Arc::new(
             ui::brand::window_icon(theme),
         ))));
@@ -434,6 +489,7 @@ impl App {
         standby::mark(at, "overlay built, window commands sent");
         self.standby_at = Some(at);
         ctx.request_repaint();
+        ctx.request_repaint_after(STANDBY_PLACE_LIMIT);
     }
 
     /// The monitor holding the capture's area; `None` outside a capture.
@@ -469,7 +525,7 @@ impl App {
         let (pos, size) = self
             .active_shot()
             .map_or(self.editor_window, |s| place_for(s).0);
-        if !cfg!(target_os = "macos") {
+        if capture_is_fullscreen() {
             ctx.send_viewport_cmd(C::Fullscreen(false));
         }
         ctx.send_viewport_cmd(C::WindowLevel(egui::WindowLevel::Normal));
@@ -517,7 +573,7 @@ impl App {
 
     fn switch_to_notice(&mut self, ctx: &egui::Context, n: Box<notice::Notice>) {
         use egui::ViewportCommand as C;
-        if !cfg!(target_os = "macos") {
+        if capture_is_fullscreen() {
             ctx.send_viewport_cmd(C::Fullscreen(false));
         }
         ctx.send_viewport_cmd(C::Decorations(false));
@@ -632,6 +688,7 @@ impl eframe::App for App {
         system::mac_titlebar::show_in_dock(self.shared.settings.show_in_dock);
         self.pump(ctx);
         self.serve_standby(ctx);
+        self.place_standby(ctx, false);
         // `ui` does not run while the Linux main window is minimized, so its X is read here.
         if let Mode::Resident {
             shell, resident, ..
@@ -681,6 +738,12 @@ impl eframe::App for App {
             } => {
                 let t = self.shared.tokens(system::appearance::system_theme(&ctx));
                 views::begin_frame(&ctx, &t);
+                // All client area, on every capture window (they share the title): winit leaves a
+                // 1 px strip of caption at the top of a borderless window that is not full screen,
+                // and a drag that starts on the screen's top edge would move the whole window.
+                system::borderless::flatten_borderless(ui::i18n::t(
+                    ui::i18n::Msg::CaptureWindowTitle,
+                ));
                 // The other monitors' windows have no `Frame` of their own; the save dialog takes the
                 // first window as its owner, or it would open behind these always-on-top windows.
                 let parent: &eframe::Frame = frame;
@@ -734,6 +797,9 @@ impl eframe::App for App {
         {
             standby::mark(at, "first full-size frame");
             self.standby_at = None;
+        }
+        if self.standby_place.is_some() && ui.max_rect().width() > 400.0 {
+            self.place_standby(&ctx, true);
         }
         match sw {
             Switch::ToEditor(e) => self.switch_to_editor(&ctx, frame, e),
@@ -1184,6 +1250,7 @@ fn run() -> eframe::Result {
                 quit_request,
                 quit_close,
                 standby_at: None,
+                standby_place: None,
             }))
         }),
     );
@@ -1224,24 +1291,50 @@ fn place_for(s: &capture::Shot) -> ((egui::Pos2, egui::Vec2), egui::Rect) {
     ((pos + (size - ew) / 2.0, ew), notice)
 }
 
+/// Whether the capture window goes into the window manager's full-screen state, or is only placed
+/// and sized over its monitor (borderless and always on top, which already covers everything).
+///
+/// Only Linux asks for the state, to cover the panels. On Windows it is what made PrtSc flash the
+/// screen black on the way in and out (a full-screen transition, with the taskbar told about it)
+/// and what made GPU overlays such as NVIDIA's treat Takeshot as a full-screen app; a borderless
+/// window with the monitor's exact size looks the same without either. macOS never used it.
+fn capture_is_fullscreen() -> bool {
+    !cfg!(any(target_os = "macos", windows))
+}
+
+/// Where the capture window of `s` goes: the top left corner of its monitor, in points.
+fn capture_window_position(s: &capture::Shot) -> egui::Pos2 {
+    egui::pos2(s.x as f32 / s.scale, s.y as f32 / s.scale)
+}
+
+/// The size of the capture window of `s`, in points: its monitor's, less one physical row of
+/// pixels on Windows. A window with exactly the monitor's size is taken for a full-screen game by
+/// GPU overlays (NVIDIA's swapped its own overlay to full-screen mode and showed its "Alt+Z" hint
+/// when the capture left), and its own overlay window is one pixel short for the same reason. The
+/// picture is shown at its own size from the window's top left, so only its last row of pixels
+/// (the monitor's bottom edge) is left out.
+fn capture_window_size(s: &capture::Shot) -> egui::Vec2 {
+    let inset = if cfg!(windows) { 1.0 } else { 0.0 };
+    egui::vec2(
+        s.image.width() as f32 / s.scale,
+        (s.image.height() as f32 - inset) / s.scale,
+    )
+}
+
 /// A capture window covering the monitor of `s`.
 fn capture_viewport(vp: egui::ViewportBuilder, s: &capture::Shot) -> egui::ViewportBuilder {
-    let k = s.scale;
     let vp = vp
         .with_title(ui::i18n::t(ui::i18n::Msg::CaptureWindowTitle))
         .with_decorations(false)
-        .with_position(egui::pos2(s.x as f32 / k, s.y as f32 / k))
-        .with_inner_size(egui::vec2(
-            s.image.width() as f32 / k,
-            s.image.height() as f32 / k,
-        ))
+        .with_position(capture_window_position(s))
+        .with_inner_size(capture_window_size(s))
         .with_always_on_top()
         .with_resizable(false)
         .with_taskbar(false);
-    if cfg!(target_os = "macos") {
-        vp
-    } else {
+    if capture_is_fullscreen() {
         vp.with_fullscreen(true)
+    } else {
+        vp
     }
 }
 
@@ -1254,22 +1347,19 @@ fn notice_viewport(vp: egui::ViewportBuilder) -> egui::ViewportBuilder {
         .with_taskbar(false)
 }
 
-/// The commands that turn the standby's window into the one `capture_viewport` builds for `s`.
+/// The commands that turn the standby's window into the one `capture_viewport` builds for `s`,
+/// except for its position: the window is sized where it is, off screen, and `place_standby`
+/// moves it onto its monitor once it has drawn the picture (see there).
 fn capture_window_commands(ctx: &egui::Context, s: &capture::Shot) {
     use egui::ViewportCommand as C;
-    let k = s.scale;
     ctx.send_viewport_cmd(C::Title(
         ui::i18n::t(ui::i18n::Msg::CaptureWindowTitle).into(),
     ));
     ctx.send_viewport_cmd(C::MousePassthrough(false));
     ctx.send_viewport_cmd(C::Resizable(false));
     ctx.send_viewport_cmd(C::WindowLevel(egui::WindowLevel::AlwaysOnTop));
-    ctx.send_viewport_cmd(C::OuterPosition(egui::pos2(s.x as f32 / k, s.y as f32 / k)));
-    ctx.send_viewport_cmd(C::InnerSize(egui::vec2(
-        s.image.width() as f32 / k,
-        s.image.height() as f32 / k,
-    )));
-    if !cfg!(target_os = "macos") {
+    ctx.send_viewport_cmd(C::InnerSize(capture_window_size(s)));
+    if capture_is_fullscreen() {
         ctx.send_viewport_cmd(C::Fullscreen(true));
     }
     ctx.send_viewport_cmd(C::Focus);
@@ -1396,6 +1486,7 @@ fn run_resident_windows(
         quit_request: Arc::new(std::sync::Mutex::new(None)),
         quit_close: Arc::new(AtomicBool::new(false)),
         standby_at: None,
+        standby_place: None,
     }));
     let since = std::time::Instant::now();
     // A hidden start waits for a panel to show the tray icon: without one it is unseen for good.
@@ -1718,12 +1809,36 @@ mod tests {
             let s = shot_at((-1920.0 * scale) as i32, 0, scale, w, h);
             let vp = capture_viewport(egui::ViewportBuilder::default(), &s);
             assert_eq!(vp.position, Some(egui::pos2(-1920.0, 0.0)), "scale {scale}");
+            // One physical row short on Windows (see `capture_window_size`), never more.
+            let inset = if cfg!(windows) { 1.0 / scale } else { 0.0 };
             assert_eq!(
                 vp.inner_size,
-                Some(egui::vec2(1920.0, 1080.0)),
+                Some(egui::vec2(1920.0, 1080.0 - inset)),
                 "scale {scale}"
             );
+            let physical = vp.inner_size.unwrap() * scale;
+            assert_eq!(physical.x, w as f32, "width, scale {scale}");
+            assert_eq!(
+                physical.y,
+                h as f32 - if cfg!(windows) { 1.0 } else { 0.0 },
+                "height, scale {scale}"
+            );
         }
+    }
+
+    #[test]
+    fn only_linux_makes_the_capture_window_full_screen() {
+        // Windows flashed black and woke GPU overlays with the full-screen state; macOS never had it.
+        let s = shot_at(0, 0, 1.0, 1920, 1080);
+        let vp = capture_viewport(egui::ViewportBuilder::default(), &s);
+        assert_eq!(
+            vp.fullscreen == Some(true),
+            cfg!(not(any(target_os = "macos", windows)))
+        );
+        assert_eq!(vp.fullscreen == Some(true), capture_is_fullscreen());
+        // Without the state, the window must still be borderless and on top of everything.
+        assert_eq!(vp.decorations, Some(false));
+        assert_eq!(vp.window_level, Some(egui::WindowLevel::AlwaysOnTop));
     }
 
     #[test]
@@ -1741,8 +1856,15 @@ mod tests {
             out.textures_delta.clear();
             let cmds = &out.viewport_output[&egui::ViewportId::ROOT].commands;
             let has = |c: C| cmds.contains(&c);
+            // The position is not among them: the window is moved onto its monitor after it has
+            // drawn, from `place_standby`, to the same place the builder puts it.
             assert!(
-                has(C::OuterPosition(built.position.unwrap())),
+                !cmds.iter().any(|c| matches!(c, C::OuterPosition(_))),
+                "scale {scale}: the window stays off screen while it draws"
+            );
+            assert_eq!(
+                Some(capture_window_position(&s)),
+                built.position,
                 "scale {scale}"
             );
             assert!(
